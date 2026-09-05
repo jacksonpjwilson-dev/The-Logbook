@@ -1,0 +1,1176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="The Logbook" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>The Logbook</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    .safe { padding-bottom: max(5.5rem, env(safe-area-inset-bottom)); }
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+    .daycell { border-radius: 12px; padding: 6px 4px 5px; text-align: left; min-height: 72px; border: 1px solid #27272a; background: #18181b; }
+    .daycell.is-rest { background: #09090b; border-color: #1c1c1e; color: #71717a; }
+    .daycell.is-today { outline: 2px solid rgba(245,158,11,.7); outline-offset: 0; }
+    .daycell.is-sel { border-color: #f59e0b; background: #1c1917; }
+    .daycell .dnum { font-size: 11px; color: #a1a1aa; }
+    .daycell.is-today .dnum { color: #fbbf24; font-weight: 700; }
+    .daycell .sess { margin-top: 4px; font-size: 10px; font-weight: 700; line-height: 1.15; letter-spacing: -.01em; }
+    .daycell .kcal { margin-top: 3px; font-size: 9px; color: #737373; }
+    .weekrow { display: flex; gap: 10px; align-items: stretch; width: 100%; border: 1px solid #27272a; background: #18181b; border-radius: 16px; padding: 10px 12px; text-align: left; }
+    .weekrow.is-sel { border-color: #f59e0b; background: #1c1917; }
+    .weekrow.is-today { box-shadow: inset 3px 0 0 #f59e0b; }
+    .weekrow.is-rest { background: #0a0a0a; }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+  <header class="sticky top-0 z-30 bg-zinc-950/90 backdrop-blur border-b border-zinc-800">
+    <div class="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+      <div class="min-w-0">
+        <h1 class="text-lg font-semibold tracking-tight">The Logbook</h1>
+        <p id="headerSub" class="text-xs text-zinc-400 truncate">Local only</p>
+      </div>
+      <div class="flex gap-2">
+        <button id="todayJump" class="shrink-0 text-xs bg-sky-500 text-zinc-950 font-semibold px-3 py-1.5 rounded-full">Today</button>
+        <button id="openSettings" class="shrink-0 text-xs bg-zinc-900 border border-zinc-700 px-3 py-1.5 rounded-full">Settings</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-4 pt-4 safe">
+    <section id="view-today"></section>
+    <section id="view-calendar" class="hidden"></section>
+    <section id="view-workout" class="hidden"></section>
+    <section id="view-progress" class="hidden"></section>
+    <section id="view-food" class="hidden"></section>
+    <section id="view-settings" class="hidden"></section>
+  </main>
+
+  <nav class="fixed bottom-0 inset-x-0 bg-zinc-900/95 backdrop-blur border-t border-zinc-800 z-40">
+    <div class="max-w-3xl mx-auto grid grid-cols-5 text-[11px]">
+      <button data-tab="today" class="navbtn py-3 text-sky-400">Today</button>
+      <button data-tab="workout" class="navbtn py-3 text-zinc-400">Log</button>
+      <button data-tab="food" class="navbtn py-3 text-zinc-400">Food</button>
+      <button data-tab="progress" class="navbtn py-3 text-zinc-400">Progress</button>
+      <button data-tab="calendar" class="navbtn py-3 text-zinc-400">Cal</button>
+    </div>
+  </nav>
+
+<script>
+const PROGRAM = {
+  rest: { id: "rest", name: "Rest", short: "Rest", color: "bg-zinc-800 text-zinc-300", exercises: [] },
+  extra: { id: "extra", name: "Extra / Custom", short: "Extra", color: "bg-fuchsia-900/60 text-fuchsia-200", exercises: [] },
+  day1: { id: "day1", name: "Quads", short: "Quads", color: "bg-sky-900/70 text-sky-200",
+    exercises: ["Barbell Back Squat","Leg Press or Hack Squat","Walking Lunges or Bulgarian Split Squat","Leg Extension","Standing Calf Raise","Hanging Knee Raise or Cable Crunch"] },
+  day2: { id: "day2", name: "Back thickness + biceps", short: "Rows + Bi", color: "bg-emerald-900/70 text-emerald-200",
+    exercises: ["Barbell or Chest-Supported Row","Chest-Supported T-Bar or Machine Row","Face Pulls or Rear Delt Machine / Cable","Straight-Arm Pulldown or Pullover","Barbell or EZ-Bar Curl","Incline Dumbbell Curl"] },
+  day3: { id: "day3", name: "Shoulders + chest", short: "Shoulders", color: "bg-amber-900/70 text-amber-200",
+    exercises: ["Seated or Standing Overhead Press","Lateral Raise","Incline Dumbbell Press","Machine or Cable Chest Fly","Overhead Tricep Extension or Pushdown","Rear Delt extra"] },
+  day4: { id: "day4", name: "Hams + posterior", short: "Hams", color: "bg-indigo-900/70 text-indigo-200",
+    exercises: ["Romanian Deadlift or Stiff-Leg Deadlift","45-Degree Back Extension or Cable Pull-Through","Lying or Seated Leg Curl","Leg Press (higher foot placement)","Walking Lunges or Step-Ups","Seated Calf Raise"] },
+  day5: { id: "day5", name: "Lats + side delts + biceps", short: "Lats + Bi", color: "bg-rose-900/70 text-rose-200",
+    exercises: ["Pull-Ups or Lat Pulldown","Seated Cable Row","Dumbbell or Cable Lateral Raise","Rear Delt Fly","Hammer Curl","Concentration or Preacher Curl"] }
+};
+
+const DEFAULT_FOODS = [
+  { id:"avocado", name:"Avocado", cal:1.6, p:0.02, c:0.085, f:0.15, unit:"g", serving:"1 g" },
+  { id:"blueberries", name:"Blueberries", cal:0.57, p:0.007, c:0.145, f:0.003, unit:"g", serving:"1 g" },
+  { id:"breaded_chicken", name:"Breaded Chicken", cal:2.5, p:0.26, c:0.11, f:0.09, unit:"g", serving:"1 g" },
+  { id:"brie", name:"Brie", cal:3.34, p:0.17857, c:0.0045, f:0.32143, unit:"g", serving:"1 g" },
+  { id:"broccoli_casserole", name:"Broccoli Casserole", cal:1.3, p:0.0345, c:0.038, f:0.1117, unit:"g", serving:"1 g" },
+  { id:"bruschetta", name:"Bruschetta", cal:2.15, p:0.04, c:0.28, f:0.09, unit:"g", serving:"1 g" },
+  { id:"cereal", name:"Cereal", cal:4, p:0.05, c:0.9, f:0.0125, unit:"g", serving:"1 g" },
+  { id:"caesar_salad", name:"Caesar Salad", cal:2.2, p:0.08, c:0.28, f:0.12, unit:"g", serving:"1 g" },
+  { id:"cheese_curds", name:"Cheese Curds", cal:3.333, p:0.2, c:0.0666, f:0.26667, unit:"g", serving:"1 g" },
+  { id:"chicken_breast", name:"Chicken Breast", cal:2, p:0.3, c:0, f:0.075, unit:"g", serving:"1 g" },
+  { id:"chicken_burger", name:"Chicken Burger", cal:1.786, p:0.1857, c:0.107, f:0.064, unit:"g", serving:"1 g" },
+  { id:"chicken_thighs", name:"Chicken Thighs", cal:1.85, p:0.19, c:0, f:0.12, unit:"g", serving:"1 g" },
+  { id:"chicken_wings", name:"Chicken Wings", cal:2.47, p:0.17, c:0, f:0.12, unit:"g", serving:"1 g" },
+  { id:"chips", name:"Chips", cal:5.2, p:0.08, c:0.64, f:0.24, unit:"g", serving:"1 g" },
+  { id:"chocolate_milk", name:"Chocolate Milk", cal:0.76, p:0.032, c:0.116, f:0.02, unit:"ml", serving:"1 ml" },
+  { id:"cooked_rice", name:"Cooked Rice", cal:1.3, p:0.027, c:0.28, f:0.003, unit:"g", serving:"1 g" },
+  { id:"french_fries", name:"French Fries", cal:1.647, p:0.0235, c:0.247, f:0.0706, unit:"g", serving:"1 g" },
+  { id:"ground_beef", name:"Ground Beef", cal:2.61, p:0.2555, c:0, f:0.1682, unit:"g", serving:"1 g" },
+  { id:"margarine", name:"Margarine", cal:7, p:0, c:0, f:0.8, unit:"g", serving:"1 g" },
+  { id:"meatloaf", name:"Meatloaf", cal:2.15, p:0.16, c:0.1, f:0.125, unit:"g", serving:"1 g" },
+  { id:"milk", name:"Milk", cal:0.52, p:0.03527, c:0.051, f:0.02, unit:"g", serving:"1 g" },
+  { id:"pepperoni_pizza", name:"Pepperoni Pizza", cal:2.73, p:0.127, c:0.36, f:0.127, unit:"g", serving:"1 g" },
+  { id:"plum_sauce", name:"Plum Sauce", cal:1.5, p:0, c:0.3667, f:0, unit:"ml", serving:"1 ml" },
+  { id:"potatoes", name:"Potatoes", cal:0.97, p:0.026, c:0.214, f:0.001, unit:"g", serving:"1 g" },
+  { id:"ranch", name:"Ranch", cal:4.4, p:0, c:0.06763, f:0.4396, unit:"g", serving:"1 g" },
+  { id:"shredded_cheese", name:"Shredded Cheese", cal:4, p:0.2287, c:0.0308, f:0.3331, unit:"g", serving:"1 g" },
+  { id:"sour_cream", name:"Sour Cream", cal:2, p:0.033, c:0.067, f:0.2, unit:"g", serving:"1 g" },
+  { id:"steak", name:"Steak", cal:2.39, p:0.2714, c:0, f:0.1398, unit:"g", serving:"1 g" },
+  { id:"steamed_broccoli", name:"Steamed Broccoli", cal:0.274, p:0.0235, c:0.05882, f:0.003, unit:"g", serving:"1 g" },
+  { id:"tomato", name:"Tomato", cal:0.18, p:0.01099, c:0.03846, f:0, unit:"g", serving:"1 g" },
+  { id:"yogurt", name:"Yogurt", cal:0.629, p:0.034, c:0.12, f:0.014, unit:"g", serving:"1 g" },
+  { id:"hummus", name:"Hummus", cal:2.5, p:0.07, c:0.14, f:0.21, unit:"g", serving:"1 g" },
+  { id:"potato_salad", name:"Potato salad", cal:1.64, p:0.02, c:0.2, f:0.086, unit:"g", serving:"1 g" },
+  { id:"shrimp", name:"Shrimp", cal:0.9, p:0.2, c:0, f:0.004, unit:"g", serving:"1 g" },
+  { id:"crackers", name:"Crackers", cal:4, p:0.12, c:0.65, f:0.14, unit:"g", serving:"1 g" },
+  { id:"annies", name:"Annies (1 pack)", cal:640, p:22, c:116, f:9, unit:"each", serving:"1 pack" },
+  { id:"bagel", name:"Bagel (Whole)", cal:270, p:11, c:56, f:1, unit:"each", serving:"1 bagel" },
+  { id:"banana", name:"Banana (Large Whole)", cal:105, p:1.29, c:27, f:0.39, unit:"each", serving:"1 banana" },
+  { id:"bread_slice", name:"Bread (1 Slice)", cal:90, p:3, c:17, f:0.75, unit:"each", serving:"1 slice" },
+  { id:"costco_hotdog", name:"Costco Hot Dog (Whole)", cal:570, p:24, c:46, f:33, unit:"each", serving:"1 hot dog" },
+  { id:"dominos_slice", name:"Dominos Pizza (Slice)", cal:345, p:13, c:35, f:16.5, unit:"each", serving:"1 slice" },
+  { id:"eggs", name:"Eggs (Large Whole)", cal:72, p:6.28, c:0.36, f:4.75, unit:"each", serving:"1 egg" },
+  { id:"gatorade", name:"Gatorade", cal:140, p:0, c:36, f:0, unit:"each", serving:"1 bottle" },
+  { id:"grape_crush", name:"Grape Crush", cal:270, p:0, c:73, f:0, unit:"each", serving:"1 drink" },
+  { id:"oatmeal_pkg", name:"Oatmeal (Whole Package)", cal:130, p:3, c:27, f:1.5, unit:"each", serving:"1 package" },
+  { id:"protein_powder", name:"Protein Powder (Scoop)", cal:140, p:25, c:2, f:2, unit:"each", serving:"1 scoop" },
+  { id:"grilled_cheese", name:"Grilled cheese melt", cal:600, p:35, c:47, f:30, unit:"each", serving:"1 melt" },
+  { id:"hash_brown", name:"Hash brown", cal:130, p:1, c:16, f:7, unit:"each", serving:"1 hash brown" },
+  { id:"frozen_yogurt", name:"Frozen yogurt", cal:800, p:15, c:200, f:15, unit:"each", serving:"1 serving" },
+  { id:"subway", name:"Subway", cal:1200, p:60, c:90, f:50, unit:"each", serving:"1 meal" },
+  { id:"vanilla_chai", name:"Vanilla Chai", cal:320, p:14, c:54, f:6, unit:"each", serving:"1 drink" },
+  { id:"chipotle", name:"Chipotle", cal:1120, p:59, c:90, f:63, unit:"each", serving:"1 meal" },
+  { id:"frannies", name:"Frannies", cal:1000, p:40, c:70, f:60, unit:"each", serving:"1 meal" },
+  { id:"costco_salad", name:"Costco salad", cal:525, p:10.5, c:42, f:38.5, unit:"each", serving:"1 salad" },
+  { id:"naan", name:"Naan", cal:310, p:10, c:44, f:10, unit:"each", serving:"1 naan" }
+];
+
+const LS_KEY = "logbook_v3";
+const state = {
+  tab: "today", selectedDate: isoDate(new Date()), calMonth: new Date(),
+  data: null, firebase: { app:null, auth:null, db:null, uid:null, ready:false },
+  saveTimer: null, charts: {}, lastSync: null, syncState: "local",
+  progPane: "lifts", calView: "week"
+};
+
+function isoDate(d) {
+  const x = new Date(d); x.setHours(0,0,0,0);
+  return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;
+}
+function parseISO(s) { const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); }
+function weekday(dateStr) { return parseISO(dateStr).getDay(); }
+function epley(w,r) { w=Number(w)||0; r=Number(r)||0; if (!w) return 0; if (r<=1) return w; return w*(1+r/30); }
+function bestSet1RM(sets) {
+  if (!sets) return 0;
+  return Math.max(0, ...sets.map(s => epley(s.w, s.r)));
+}
+function setVolume(sets) {
+  if (!sets) return 0;
+  return sets.reduce((n,s)=> n + (Number(s.w)||0)*(Number(s.r)||0), 0);
+}
+
+function defaultData() {
+  return {
+    weekTemplate: { 0:"rest", 1:"day1", 2:"day2", 3:"rest", 4:"day3", 5:"day4", 6:"rest" },
+    overrides: {}, logs: {}, bodyweight: {}, foods: DEFAULT_FOODS, foodLogs: {},
+    supplements: {},
+    targets: { cal:4000, protein:200, fat:180, carbs:450 },
+    firebaseConfig: null
+  };
+}
+
+function loadLocal() {
+  try {
+    const raw = localStorage.getItem(LS_KEY) || localStorage.getItem("liftfuel_v2");
+    if (!raw) return defaultData();
+    const merged = { ...defaultData(), ...JSON.parse(raw) };
+    if (!merged.foods || merged.foods.length < 20) merged.foods = DEFAULT_FOODS;
+    if (!merged.supplements) merged.supplements = {};
+    return merged;
+  } catch { return defaultData(); }
+}
+function saveLocal() { localStorage.setItem(LS_KEY, JSON.stringify(state.data)); }
+function scheduleSave() {
+  saveLocal();
+  setSyncStatus();
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(pushCloud, 600);
+}
+
+function plannedDay(dateStr) {
+  if (state.data.overrides[dateStr]) return state.data.overrides[dateStr];
+  return state.data.weekTemplate[weekday(dateStr)] || "rest";
+}
+function addDays(dateStr, n) {
+  const d = parseISO(dateStr);
+  d.setDate(d.getDate() + n);
+  return isoDate(d);
+}
+function shiftTemplate(dir) {
+  const t = state.data.weekTemplate;
+  const next = {};
+  for (let i=0;i<7;i++) next[i] = t[(i - dir + 7) % 7];
+  state.data.weekTemplate = next;
+  scheduleSave();
+}
+function pushWorkoutsAfterRest(startDate) {
+  const original = plannedDay(startDate);
+  if (original === "rest") return false;
+  const chain = [{ date: startDate, plan: original }];
+  let d = addDays(startDate, 1);
+  for (let i = 0; i < 400; i++) {
+    const plan = plannedDay(d);
+    chain.push({ date: d, plan });
+    if (plan === "rest") break;
+    d = addDays(d, 1);
+  }
+  state.data.overrides[chain[0].date] = "rest";
+  for (let i = 1; i < chain.length; i++) {
+    state.data.overrides[chain[i].date] = chain[i - 1].plan;
+  }
+  scheduleSave();
+  return true;
+}
+
+function lastLogForExercise(name, beforeDate) {
+  const dates = Object.keys(state.data.logs).filter(d => d < beforeDate).sort().reverse();
+  for (const d of dates) {
+    const sets = state.data.logs[d]?.exercises?.[name];
+    if (sets && sets.some(s => s.w || s.r)) return { date:d, sets };
+  }
+  return null;
+}
+function bestWeight(sets) {
+  if (!sets || !sets.length) return 0;
+  return Math.max(...sets.map(s => Number(s.w)||0));
+}
+
+function foodTotals(dateStr) {
+  const items = state.data.foodLogs[dateStr] || [];
+  return items.reduce((a,it) => {
+    const f = state.data.foods.find(x => x.id === it.id);
+    const q = Number(it.qty)||0;
+    if (!f) return a;
+    a.cal += f.cal*q; a.p += f.p*q; a.c += (f.c||0)*q; a.f += (f.f||0)*q;
+    return a;
+  }, { cal:0, p:0, c:0, f:0 });
+}
+
+function setSyncStatus(extra) {
+  const el = document.getElementById("headerSub");
+  if (!el) return;
+  if (extra) { el.textContent = extra; return; }
+  if (!state.data?.firebaseConfig?.apiKey) {
+    el.textContent = "Local only · not synced";
+    return;
+  }
+  if (!state.firebase.uid) {
+    el.textContent = "Cloud ready · sign in (Settings)";
+    return;
+  }
+  const when = state.lastSync ? new Date(state.lastSync).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "just now";
+  el.textContent = `Cloud synced · ${when}`;
+}
+
+function initFirebaseIfConfigured() {
+  const cfg = state.data.firebaseConfig;
+  if (!cfg || !cfg.apiKey) { setSyncStatus(); return; }
+  try {
+    if (!firebase.apps.length) state.firebase.app = firebase.initializeApp(cfg);
+    else state.firebase.app = firebase.app();
+    state.firebase.auth = firebase.auth();
+    state.firebase.db = firebase.firestore();
+    state.firebase.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
+    state.firebase.ready = true;
+    setSyncStatus("Cloud ready · sign in (Settings)");
+    state.firebase.auth.getRedirectResult().catch(e => {
+      if (e && e.code) setSyncStatus(e.code + ": " + e.message);
+    });
+    state.firebase.auth.onAuthStateChanged(async (user) => {
+      if (!user) { state.firebase.uid = null; setSyncStatus(); render(); return; }
+      state.firebase.uid = user.uid;
+      setSyncStatus("Syncing…");
+      await pullCloud();
+      state.lastSync = Date.now();
+      setSyncStatus();
+      render();
+    });
+  } catch (e) { setSyncStatus("Firebase error: " + e.message); }
+}
+
+async function pullCloud() {
+  if (!state.firebase.uid) return;
+  const snap = await state.firebase.db.collection("users").doc(state.firebase.uid).get();
+  if (snap.exists && snap.data().payload) {
+    const keepCfg = state.data.firebaseConfig;
+    state.data = { ...defaultData(), ...snap.data().payload, firebaseConfig: keepCfg };
+    if (!state.data.foods || state.data.foods.length < 20) state.data.foods = DEFAULT_FOODS;
+    saveLocal();
+  } else await pushCloud();
+}
+async function pushCloud() {
+  if (!state.firebase.uid) return;
+  const payload = { ...state.data }; delete payload.firebaseConfig;
+  try {
+    await state.firebase.db.collection("users").doc(state.firebase.uid).set({
+      payload, updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge:true });
+    state.lastSync = Date.now();
+    setSyncStatus();
+  } catch (e) { setSyncStatus("Sync failed · data still local"); }
+}
+async function signInGoogle() {
+  if (!state.firebase.ready) return alert("Paste a valid Firebase config first.");
+  const provider = new firebase.auth.GoogleAuthProvider();
+  setSyncStatus("Opening Google…");
+  try {
+    await state.firebase.auth.signInWithPopup(provider);
+  } catch (e1) {
+    try {
+      await state.firebase.auth.signInWithRedirect(provider);
+    } catch (e) {
+      setSyncStatus((e.code || e1.code || "signin") + ": " + (e.message || e1.message || e));
+      alert((e.code || e1.code || "Sign-in error") + "\n\n" + (e.message || e1.message || e));
+    }
+  }
+}
+async function signInEmail(create) {
+  if (!state.firebase.ready) return alert("Paste a valid Firebase config first.");
+  const email = (document.getElementById("authEmail")||{}).value?.trim();
+  const pass = (document.getElementById("authPass")||{}).value;
+  if (!email || !pass) return alert("Enter email and password.");
+  try {
+    if (create) await state.firebase.auth.createUserWithEmailAndPassword(email, pass);
+    else await state.firebase.auth.signInWithEmailAndPassword(email, pass);
+  } catch (e) {
+    setSyncStatus((e.code || "auth") + ": " + e.message);
+    alert((e.code || "Auth error") + "\n\n" + e.message);
+  }
+}
+async function signOut() { if (state.firebase.auth) await state.firebase.auth.signOut(); }
+
+function showTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll(".navbtn").forEach(b => {
+    b.classList.toggle("text-sky-400", b.dataset.tab === tab);
+    b.classList.toggle("text-zinc-400", b.dataset.tab !== tab);
+  });
+  ["today","calendar","workout","progress","food","settings"].forEach(t => {
+    const el = document.getElementById("view-"+t);
+    if (el) el.classList.toggle("hidden", t !== tab);
+  });
+  if (tab==="today") renderToday();
+  if (tab==="calendar") renderCalendar();
+  if (tab==="workout") renderWorkout();
+  if (tab==="progress") renderProgress();
+  if (tab==="food") renderFood();
+  if (tab==="settings") renderSettings();
+}
+function render() { showTab(state.tab); }
+
+function leftovers(dateStr) {
+  const tot = foodTotals(dateStr);
+  const t = state.data.targets;
+  return {
+    cal: Math.max(0, (t.cal||0) - tot.cal),
+    p: Math.max(0, (t.protein||0) - tot.p),
+    c: Math.max(0, (t.carbs||0) - tot.c),
+    f: Math.max(0, (t.fat||0) - tot.f),
+    tot
+  };
+}
+function suggestFoods(dateStr, limit) {
+  const left = leftovers(dateStr);
+  const out = [];
+  (state.data.foods||[]).forEach(f => {
+    const measured = f.unit==="g" || f.unit==="ml";
+    let qty = measured ? 100 : 1;
+    if (measured && left.p > 0 && f.p > 0) {
+      const need = Math.min(250, Math.max(40, Math.round(left.p / Math.max(f.p, 0.001))));
+      qty = Math.min(300, Math.max(40, Math.round(need / 10) * 10));
+    }
+    const cal = f.cal*qty, p = f.p*qty, c=(f.c||0)*qty, fat=(f.f||0)*qty;
+    if (cal < 8 && p < 1) return;
+    let score = 0;
+    if (left.p > 15) score += p * 4 - Math.abs(cal - Math.min(cal, left.cal)) * 0.15;
+    else score += Math.min(cal, left.cal) * 0.2 + p;
+    if (cal > left.cal + 250 && left.cal < 800) score -= 40;
+    out.push({ f, qty, cal, p, c, fat, score, unit: measured ? f.unit : "qty" });
+  });
+  out.sort((a,b)=>b.score-a.score);
+  return out.slice(0, limit||6);
+}
+function weekSessionCounts() {
+  const start = weekStart(state.selectedDate);
+  const s = parseISO(start);
+  const counts = { day1:0, day2:0, day3:0, day4:0, day5:0 };
+  for (let i=0;i<7;i++) {
+    const dt = isoDate(new Date(s.getFullYear(), s.getMonth(), s.getDate()+i));
+    const pid = plannedDay(dt);
+    if (hasLiftLog(dt) && counts[pid]!=null) counts[pid]++;
+  }
+  return counts;
+}
+function prsFor(name) {
+  let best = 0, date = "";
+  Object.keys(state.data.logs||{}).forEach(d => {
+    const w = bestWeight(state.data.logs[d].exercises?.[name]);
+    if (w > best) { best = w; date = d; }
+  });
+  return { best, date };
+}
+
+function renderToday() {
+  const root = document.getElementById("view-today");
+  const dateStr = isoDate(new Date());
+  state.selectedDate = dateStr;
+  const pid = plannedDay(dateStr);
+  const prog = PROGRAM[pid] || PROGRAM.rest;
+  const left = leftovers(dateStr);
+  const t = state.data.targets;
+  const tot = left.tot;
+  const sugg = suggestFoods(dateStr, 6);
+  const supp = state.data.supplements[dateStr] || { creatine:false, omega:false, vitd:false };
+  const pct = (n,d) => d ? Math.min(100, Math.round(n/d*100)) : 0;
+  const weekDates = (() => {
+    const a = parseISO(dateStr); a.setDate(a.getDate()-a.getDay());
+    return Array.from({length:7},(_,i)=>addDays(isoDate(a),i));
+  })();
+
+  root.innerHTML = `
+    <p class="text-xs text-zinc-500 uppercase tracking-widest">${prettyDate(dateStr)}</p>
+    <h2 class="text-3xl font-semibold mt-1">${prog.short}</h2>
+    <p class="text-zinc-400 mt-1">${prog.name}${pid==="rest"?" · walk, eat, supplements":" · Movati"}</p>
+
+    <div class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+      <p class="text-xs text-zinc-500">Calories left</p>
+      <p class="text-4xl font-semibold text-sky-400">${Math.round(left.cal).toLocaleString()}</p>
+      <p class="text-sm text-zinc-400 mt-1">${Math.round(tot.cal)} / ${t.cal} eaten · ${Math.round(left.p)}g protein left</p>
+      ${[["Protein",tot.p,t.protein,"#34d399"],["Carbs",tot.c,t.carbs,"#60a5fa"],["Fat",tot.f,t.fat,"#f472b6"]].map(([l,v,g,col])=>`
+        <div class="mt-2"><div class="flex justify-between text-[11px] text-zinc-500"><span>${l}</span><span>${Math.round(v)} / ${g||0}g</span></div>
+        <div class="h-2 rounded-full bg-zinc-800 overflow-hidden"><div style="width:${pct(v,g)}%;background:${col}" class="h-full"></div></div></div>`).join("")}
+    </div>
+
+    <div class="flex gap-2 mt-3 overflow-x-auto pb-1">
+      ${weekDates.map(d=>{
+        const p = PROGRAM[plannedDay(d)]||PROGRAM.rest;
+        const on = d===dateStr;
+        return `<button data-jump="${d}" class="shrink-0 px-3 py-2 rounded-xl border text-left ${on?"border-sky-400 bg-zinc-900":"border-zinc-800 bg-zinc-900"}">
+          <div class="text-[10px] text-zinc-500">${parseISO(d).toLocaleDateString(undefined,{weekday:"short"})}</div>
+          <div class="text-xs font-semibold">${p.short}</div>
+          ${hasLiftLog(d)?'<div class="text-[10px] text-emerald-400">done</div>':""}
+        </button>`;
+      }).join("")}
+    </div>
+
+    <div class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+      <div class="flex justify-between items-center">
+        <h3 class="text-lg font-semibold">Session</h3>
+        <button id="goLog" class="text-sm bg-sky-500 text-zinc-950 font-semibold px-3 py-1.5 rounded-full">Log it</button>
+      </div>
+      ${pid==="rest" ? `<p class="text-zinc-400 mt-2">Rest day. Push only if you want extra work.</p>` :
+        (prog.exercises||[]).map(name=>{
+          const prev = lastLogForExercise(name, dateStr);
+          const last = prev ? prev.sets.filter(s=>s.w||s.r).map(s=>`${s.w}×${s.r}`).join("  ") : "—";
+          return `<div class="flex justify-between gap-2 py-2 border-b border-zinc-800"><span>${name}</span><span class="text-xs text-zinc-500">${last}</span></div>`;
+        }).join("")}
+    </div>
+
+    <div class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+      <p class="text-sm text-zinc-400 mb-2">Supplements</p>
+      <div class="grid grid-cols-3 gap-2 text-sm">
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supC" ${supp.creatine?"checked":""}/> Creatine</label>
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supO" ${supp.omega?"checked":""}/> Omegas</label>
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supD" ${supp.vitd?"checked":""}/> Vitamin D</label>
+      </div>
+    </div>
+
+    <div class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4 mb-8">
+      <div class="flex justify-between items-center">
+        <h3 class="text-lg font-semibold">Eat next</h3>
+        <button id="goFood" class="text-sm text-sky-400">Food tab</button>
+      </div>
+      <p class="text-xs text-zinc-500 mt-1 mb-3">Best fits from your library for what’s left today.</p>
+      ${sugg.map(s=>`
+        <div class="flex items-center gap-2 py-2 border-b border-zinc-800">
+          <div class="flex-1 min-w-0">
+            <p class="truncate">${s.f.name}</p>
+            <p class="text-[11px] text-zinc-500">${s.qty} ${s.unit} · ${Math.round(s.cal)} kcal · ${Math.round(s.p)}p</p>
+          </div>
+          <button data-sugg="${s.f.id}" data-qty="${s.qty}" class="text-sm bg-sky-500 text-zinc-950 font-semibold px-3 py-1 rounded-lg">Add</button>
+        </div>`).join("") || "<p class='text-zinc-500'>Library empty.</p>"}
+    </div>
+  `;
+  root.querySelector("#goLog").onclick = () => showTab("workout");
+  root.querySelector("#goFood").onclick = () => showTab("food");
+  root.querySelectorAll("[data-jump]").forEach(b => b.onclick = () => { state.selectedDate = b.dataset.jump; showTab("calendar"); });
+  const saveSupp = () => {
+    state.data.supplements[dateStr] = {
+      creatine: root.querySelector("#supC").checked,
+      omega: root.querySelector("#supO").checked,
+      vitd: root.querySelector("#supD").checked
+    };
+    scheduleSave();
+  };
+  root.querySelector("#supC").onchange = saveSupp;
+  root.querySelector("#supO").onchange = saveSupp;
+  root.querySelector("#supD").onchange = saveSupp;
+  root.querySelectorAll("[data-sugg]").forEach(b => b.onclick = () => {
+    foodDay(dateStr).push({ id: b.dataset.sugg, qty: Number(b.dataset.qty)||1 });
+    scheduleSave(); renderToday();
+  });
+}
+
+function prettyDate(dateStr) {
+  return parseISO(dateStr).toLocaleDateString(undefined, { weekday:"long", month:"short", day:"numeric" });
+}
+function hasLiftLog(dateStr) {
+  const ex = state.data.logs[dateStr]?.exercises;
+  return !!ex && Object.values(ex).some(s => s.some(x => x.w || x.r));
+}
+function renderCalendar() {
+  const root = document.getElementById("view-calendar");
+  const month = new Date(state.calMonth.getFullYear(), state.calMonth.getMonth(), 1);
+  const startDow = month.getDay();
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth()+1, 0).getDate();
+  const title = month.toLocaleString(undefined, { month:"long", year:"numeric" });
+  const today = isoDate(new Date());
+  const view = state.calView || "week";
+
+  const weekAnchor = parseISO(state.selectedDate);
+  weekAnchor.setDate(weekAnchor.getDate() - weekAnchor.getDay());
+  const weekDates = Array.from({length:7}, (_,i) => addDays(isoDate(weekAnchor), i));
+  const weekLabel = parseISO(weekDates[0]).toLocaleDateString(undefined,{month:"short",day:"numeric"})
+    + " – " + parseISO(weekDates[6]).toLocaleDateString(undefined,{month:"short",day:"numeric"});
+
+  let monthCells = "";
+  for (let i=0;i<startDow;i++) monthCells += `<div></div>`;
+  for (let d=1; d<=daysInMonth; d++) {
+    const dateStr = isoDate(new Date(month.getFullYear(), month.getMonth(), d));
+    const p = PROGRAM[plannedDay(dateStr)] || PROGRAM.rest;
+    const cals = Math.round(foodTotals(dateStr).cal);
+    const cls = ["daycell", p.id==="rest"?"is-rest":"", dateStr===today?"is-today":"", dateStr===state.selectedDate?"is-sel":""].join(" ");
+    monthCells += `<button data-date="${dateStr}" class="${cls}">
+      <div class="flex items-center justify-between">
+        <span class="dnum">${d}</span>
+        ${hasLiftLog(dateStr) ? '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>' : ""}
+      </div>
+      <div class="sess ${p.id==="rest"?"text-zinc-500":""}">${p.short || p.name}</div>
+      <div class="kcal">${cals ? cals.toLocaleString() : "—"}</div>
+    </button>`;
+  }
+
+  const weekRows = weekDates.map(dateStr => {
+    const p = PROGRAM[plannedDay(dateStr)] || PROGRAM.rest;
+    const food = foodTotals(dateStr);
+    const dow = parseISO(dateStr).toLocaleDateString(undefined,{weekday:"short"});
+    const dayn = parseISO(dateStr).getDate();
+    const cls = ["weekrow", p.id==="rest"?"is-rest":"", dateStr===today?"is-today":"", dateStr===state.selectedDate?"is-sel":""].join(" ");
+    return `<button data-date="${dateStr}" class="${cls}">
+      <div class="w-12 shrink-0">
+        <div class="text-[11px] uppercase tracking-wide text-zinc-500">${dow}</div>
+        <div class="text-xl font-semibold ${dateStr===today?"text-sky-400":""}">${dayn}</div>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full ${p.color}">${p.short}</span>
+          ${hasLiftLog(dateStr) ? '<span class="text-[10px] text-emerald-400">logged</span>' : ""}
+          ${state.data.overrides[dateStr] ? '<span class="text-[10px] text-zinc-500">custom</span>' : ""}
+        </div>
+        <div class="text-sm font-medium mt-1 truncate">${p.name}</div>
+        <div class="text-xs text-zinc-500 mt-0.5">${food.cal ? Math.round(food.cal).toLocaleString()+" kcal" : "No food"}</div>
+      </div>
+    </button>`;
+  }).join("");
+
+  const sel = PROGRAM[plannedDay(state.selectedDate)] || PROGRAM.rest;
+  const selFood = foodTotals(state.selectedDate);
+
+  const gridBlock = view === "week"
+    ? `<div class="space-y-2">${weekRows}</div>`
+    : `<div class="cal-grid text-[11px] text-zinc-500 mb-1">
+         ${["S","M","T","W","T","F","S"].map(x=>`<div class="text-center text-zinc-500 pb-1">${x}</div>`).join("")}
+       </div>
+       <div class="cal-grid">${monthCells}</div>`;
+
+  root.innerHTML = `
+    <div class="flex items-center gap-2 mb-3">
+      <button id="prevM" class="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800">‹</button>
+      <div class="flex-1 text-center">
+        <h2 class="font-semibold leading-tight">${view==="week" ? weekLabel : title}</h2>
+        <p class="text-[11px] text-zinc-500">${view==="week" ? "Week view" : "Month view"}</p>
+      </div>
+      <button id="nextM" class="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800">›</button>
+    </div>
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      <button data-view="week" class="rounded-xl py-2 text-sm font-medium ${view==="week"?"bg-sky-500 text-zinc-950":"bg-zinc-900 border border-zinc-800"}">Week</button>
+      <button data-view="month" class="rounded-xl py-2 text-sm font-medium ${view==="month"?"bg-sky-500 text-zinc-950":"bg-zinc-900 border border-zinc-800"}">Month</button>
+    </div>
+    ${gridBlock}
+    <div class="flex flex-wrap gap-2 mt-3 text-[10px] text-zinc-400">
+      <span class="px-2 py-0.5 rounded-full bg-sky-900/70 text-sky-200">Quads</span>
+      <span class="px-2 py-0.5 rounded-full bg-indigo-900/70 text-indigo-200">Hams</span>
+      <span class="px-2 py-0.5 rounded-full bg-emerald-900/70 text-emerald-200">Rows + Bi</span>
+      <span class="px-2 py-0.5 rounded-full bg-rose-900/70 text-rose-200">Lats + Bi</span>
+      <span class="px-2 py-0.5 rounded-full bg-amber-900/70 text-amber-200">Shoulders</span>
+    </div>
+
+    <div class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+      <p class="text-xs text-zinc-400">${prettyDate(state.selectedDate)}${state.selectedDate===today?" · Today":""}${state.data.overrides[state.selectedDate]?" · custom":""}</p>
+      <h3 class="text-lg font-semibold mt-1">${sel.name}</h3>
+      <p class="text-sm text-zinc-400 mt-1">${selFood.cal ? Math.round(selFood.cal).toLocaleString()+" kcal · "+Math.round(selFood.p)+"p · "+Math.round(selFood.c)+"c · "+Math.round(selFood.f)+"f" : "No food logged"}</p>
+      <div class="flex flex-wrap gap-2 mt-3">
+        ${Object.values(PROGRAM).map(p => `<button data-assign="${p.id}" class="px-3 py-1.5 rounded-full text-sm font-medium ${plannedDay(state.selectedDate)===p.id?"bg-sky-500 text-zinc-950":"bg-zinc-800 text-zinc-300"}">${p.short||p.name}</button>`).join("")}
+      </div>
+      <div class="grid grid-cols-2 gap-2 mt-4">
+        <button id="openLog" class="bg-sky-500 text-zinc-950 font-semibold rounded-xl py-2.5">Log workout</button>
+        <button id="openFood" class="bg-zinc-800 font-medium rounded-xl py-2.5">Log food</button>
+      </div>
+      <div class="grid grid-cols-3 gap-2 mt-2">
+        <button id="restOnly" class="bg-zinc-800 rounded-xl py-2 text-sm">Rest only</button>
+        <button id="pushRest" class="bg-zinc-800 rounded-xl py-2 text-sm">Rest & push</button>
+        <button id="clearOverride" class="bg-zinc-800 rounded-xl py-2 text-sm">Default</button>
+      </div>
+    </div>
+
+    <details class="mt-3 rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+      <summary class="font-semibold cursor-pointer">Schedule tools</summary>
+      <p class="text-xs text-zinc-400 mt-3 mb-2">Shift rotates every future week. Date overrides stay put.</p>
+      <div class="flex gap-2 mb-4">
+        <button id="shiftBack" class="flex-1 bg-zinc-800 rounded-xl py-2 text-sm">← Back 1 day</button>
+        <button id="shiftFwd" class="flex-1 bg-zinc-800 rounded-xl py-2 text-sm">Forward 1 day →</button>
+      </div>
+      <p class="text-xs text-zinc-400 mb-2">Weekly default</p>
+      ${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((label,i)=>`
+        <div class="flex items-center justify-between py-1.5 gap-3">
+          <span class="w-10 text-sm text-zinc-400">${label}</span>
+          <select data-wd="${i}" class="flex-1 bg-zinc-800 rounded-lg px-2 py-1.5 text-sm">
+            ${Object.values(PROGRAM).map(p => `<option value="${p.id}" ${state.data.weekTemplate[i]===p.id?"selected":""}>${p.short||p.name}</option>`).join("")}
+          </select>
+        </div>`).join("")}
+    </details>
+  `;
+
+  root.querySelector("#prevM").onclick = () => {
+    if (view === "week") state.selectedDate = addDays(state.selectedDate, -7);
+    else state.calMonth = new Date(month.getFullYear(), month.getMonth()-1, 1);
+    renderCalendar();
+  };
+  root.querySelector("#nextM").onclick = () => {
+    if (view === "week") state.selectedDate = addDays(state.selectedDate, 7);
+    else state.calMonth = new Date(month.getFullYear(), month.getMonth()+1, 1);
+    renderCalendar();
+  };
+  root.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { state.calView = b.dataset.view; renderCalendar(); });
+  root.querySelectorAll("[data-date]").forEach(b => b.onclick = () => { state.selectedDate = b.dataset.date; renderCalendar(); });
+  root.querySelectorAll("[data-assign]").forEach(b => b.onclick = () => {
+    state.data.overrides[state.selectedDate] = b.dataset.assign;
+    scheduleSave();
+    renderCalendar();
+  });
+  root.querySelector("#restOnly").onclick = () => {
+    state.data.overrides[state.selectedDate] = "rest";
+    scheduleSave();
+    renderCalendar();
+  };
+  root.querySelector("#pushRest").onclick = () => {
+    if (!pushWorkoutsAfterRest(state.selectedDate)) {
+      state.data.overrides[state.selectedDate] = "rest";
+      scheduleSave();
+    }
+    renderCalendar();
+  };
+  root.querySelector("#clearOverride").onclick = () => { delete state.data.overrides[state.selectedDate]; scheduleSave(); renderCalendar(); };
+  root.querySelector("#openLog").onclick = () => showTab("workout");
+  root.querySelector("#openFood").onclick = () => showTab("food");
+  root.querySelectorAll("select[data-wd]").forEach(s => s.onchange = () => {
+    state.data.weekTemplate[Number(s.dataset.wd)] = s.value; scheduleSave(); renderCalendar();
+  });
+  root.querySelector("#shiftFwd").onclick = () => { shiftTemplate(1); renderCalendar(); };
+  root.querySelector("#shiftBack").onclick = () => { shiftTemplate(-1); renderCalendar(); };
+}
+
+function ensureLog(dateStr) {
+  if (!state.data.logs[dateStr]) state.data.logs[dateStr] = { programDay: plannedDay(dateStr), exercises: {}, notes: "" };
+  if (state.data.logs[dateStr].notes == null) state.data.logs[dateStr].notes = "";
+  return state.data.logs[dateStr];
+}
+
+function renderWorkout() {
+  const root = document.getElementById("view-workout");
+  const dateStr = state.selectedDate;
+  const pid = plannedDay(dateStr);
+  const prog = PROGRAM[pid] || PROGRAM.rest;
+  const log = ensureLog(dateStr);
+  log.programDay = pid;
+  const bw = state.data.bodyweight[dateStr] ?? "";
+  const supp = state.data.supplements[dateStr] || { creatine:false, omega:false, vitd:false };
+
+  let html = `
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <p class="text-xs text-zinc-400">${dateStr}</p>
+        <h2 class="text-xl font-semibold">${prog.name}</h2>
+      </div>
+      <input type="date" id="logDate" value="${dateStr}" class="bg-zinc-800 rounded-lg px-2 py-1 text-sm" />
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3 flex items-center gap-3">
+      <label class="text-sm text-zinc-400">Body weight</label>
+      <input id="bwInput" type="number" step="0.1" value="${bw}" placeholder="lb" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2" />
+      <span class="text-xs text-zinc-500">lb</span>
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3">
+      <p class="text-sm text-zinc-400 mb-2">Supplements</p>
+      <div class="grid grid-cols-3 gap-2 text-sm">
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supC" ${supp.creatine?"checked":""}/> Creatine</label>
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supO" ${supp.omega?"checked":""}/> Omegas</label>
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supD" ${supp.vitd?"checked":""}/> Vitamin D</label>
+      </div>
+    </div>
+    <textarea id="notes" rows="2" class="w-full bg-zinc-900 border border-zinc-800 rounded-2xl px-3 py-2 mb-3 text-sm" placeholder="Session notes (sleep, shoulder, pump… )">${log.notes||""}</textarea>
+  `;
+
+  if (pid === "rest") {
+    html += `<p class="text-zinc-400 mb-6">Rest day. Change it on Calendar if you want to train.</p>`;
+    root.innerHTML = html; bindWorkoutHeader(root); return;
+  }
+
+  const exercises = pid === "extra" ? Object.keys(log.exercises) : prog.exercises;
+  if (pid === "extra") {
+    html += `<div class="flex gap-2 mb-3"><input id="customEx" class="flex-1 bg-zinc-800 rounded-lg px-3 py-2" placeholder="Add exercise"/><button id="addEx" class="bg-sky-500 text-zinc-950 font-semibold px-3 rounded-lg">Add</button></div>`;
+  }
+
+  exercises.forEach(name => {
+    if (!log.exercises[name]) log.exercises[name] = [{w:"",r:""},{w:"",r:""},{w:"",r:""}];
+    const prev = lastLogForExercise(name, dateStr);
+    const prevTxt = prev ? prev.sets.filter(s=>s.w||s.r).map(s => `${s.w||"-"}×${s.r||"-"}`).join("  ") : "no previous";
+    const prev1 = prev ? Math.round(bestSet1RM(prev.sets)) : 0;
+    html += `<div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3" data-ex="${encodeURIComponent(name)}">
+      <div class="flex justify-between gap-2 items-start">
+        <h3 class="font-medium">${name}</h3>
+        <div class="flex gap-2">
+          ${prev ? `<button class="uselast text-[11px] text-zinc-300">Use last</button>` : ""}
+          <button class="addset text-xs text-sky-400">+ set</button>
+        </div>
+      </div>
+      <p class="text-[11px] text-zinc-500 mt-1">Last${prev?" ("+prev.date+")":""}: ${prevTxt}${prev1?` · est 1RM ${prev1} lb`:""}</p>
+      <div class="sets mt-2 space-y-2">${log.exercises[name].map((s,i)=>setRow(s,i)).join("")}</div>
+    </div>`;
+  });
+
+  html += `<button id="saveWorkout" class="w-full bg-sky-500 text-zinc-950 font-semibold rounded-xl py-3 mb-6">Save workout</button>`;
+  root.innerHTML = html;
+  bindWorkoutHeader(root);
+
+  root.querySelectorAll("[data-ex]").forEach(card => {
+    const name = decodeURIComponent(card.dataset.ex);
+    card.querySelector(".addset").onclick = () => { log.exercises[name].push({w:"",r:""}); scheduleSave(); renderWorkout(); };
+    const ul = card.querySelector(".uselast");
+    if (ul) ul.onclick = () => {
+      const prev = lastLogForExercise(name, dateStr);
+      if (!prev) return;
+      log.exercises[name] = prev.sets.map(s => ({ w:s.w, r:s.r }));
+      scheduleSave(); renderWorkout();
+    };
+    card.querySelectorAll(".setw").forEach(inp => inp.oninput = () => { log.exercises[name][Number(inp.dataset.i)].w = inp.value; scheduleSave(); });
+    card.querySelectorAll(".setr").forEach(inp => inp.oninput = () => { log.exercises[name][Number(inp.dataset.i)].r = inp.value; scheduleSave(); });
+  });
+  const addEx = root.querySelector("#addEx");
+  if (addEx) addEx.onclick = () => {
+    const n = root.querySelector("#customEx").value.trim(); if (!n) return;
+    log.exercises[n] = [{w:"",r:""}]; scheduleSave(); renderWorkout();
+  };
+  root.querySelector("#saveWorkout").onclick = () => { scheduleSave(); alert("Saved"); };
+}
+
+function setRow(s,i) {
+  return `<div class="grid grid-cols-[2rem_1fr_1fr] gap-2 items-center">
+    <span class="text-xs text-zinc-500">${i+1}</span>
+    <input class="setw bg-zinc-800 rounded-lg px-3 py-2" data-i="${i}" type="number" step="0.5" placeholder="lb" value="${s.w??""}" />
+    <input class="setr bg-zinc-800 rounded-lg px-3 py-2" data-i="${i}" type="number" step="1" placeholder="reps" value="${s.r??""}" />
+  </div>`;
+}
+
+function bindWorkoutHeader(root) {
+  root.querySelector("#logDate").onchange = e => { state.selectedDate = e.target.value; renderWorkout(); };
+  root.querySelector("#bwInput").oninput = e => {
+    const v = e.target.value;
+    if (v==="") delete state.data.bodyweight[state.selectedDate];
+    else state.data.bodyweight[state.selectedDate] = Number(v);
+    scheduleSave();
+  };
+  root.querySelector("#notes").oninput = e => { ensureLog(state.selectedDate).notes = e.target.value; scheduleSave(); };
+  const saveSupp = () => {
+    state.data.supplements[state.selectedDate] = {
+      creatine: root.querySelector("#supC").checked,
+      omega: root.querySelector("#supO").checked,
+      vitd: root.querySelector("#supD").checked
+    };
+    scheduleSave();
+  };
+  root.querySelector("#supC").onchange = saveSupp;
+  root.querySelector("#supO").onchange = saveSupp;
+  root.querySelector("#supD").onchange = saveSupp;
+}
+
+function allExerciseNames() {
+  const set = new Set();
+  Object.values(PROGRAM).forEach(p => p.exercises.forEach(e => set.add(e)));
+  Object.values(state.data.logs).forEach(l => Object.keys(l.exercises||{}).forEach(e => set.add(e)));
+  return [...set];
+}
+
+function weekStart(dateStr) {
+  const d = parseISO(dateStr);
+  d.setDate(d.getDate() - d.getDay());
+  return isoDate(d);
+}
+function weeklyVolume(anchor) {
+  const start = weekStart(anchor);
+  const s = parseISO(start);
+  let total = 0;
+  const byDay = {};
+  for (let i=0;i<7;i++) {
+    const dt = isoDate(new Date(s.getFullYear(), s.getMonth(), s.getDate()+i));
+    const log = state.data.logs[dt];
+    let v = 0;
+    if (log?.exercises) Object.values(log.exercises).forEach(sets => v += setVolume(sets));
+    byDay[dt] = v; total += v;
+  }
+  return { start, total, byDay };
+}
+
+function renderProgress() {
+  const root = document.getElementById("view-progress");
+  const pane = state.progPane || "lifts";
+  root.innerHTML = `
+    <div class="flex gap-2 mb-4">
+      <button data-pane="lifts" class="flex-1 rounded-xl py-2 text-sm font-medium ${pane==="lifts"?"bg-sky-500 text-zinc-950":"bg-zinc-800"}">Lifts</button>
+      <button data-pane="food" class="flex-1 rounded-xl py-2 text-sm font-medium ${pane==="food"?"bg-sky-500 text-zinc-950":"bg-zinc-800"}">Food</button>
+    </div>
+    <div id="progBody"></div>
+  `;
+  root.querySelectorAll("[data-pane]").forEach(b => b.onclick = () => { state.progPane = b.dataset.pane; renderProgress(); });
+  if (pane==="food") renderFoodProgress(root.querySelector("#progBody"));
+  else renderLiftProgress(root.querySelector("#progBody"));
+}
+
+function renderLiftProgress(box) {
+  const names = allExerciseNames();
+  const current = state._progEx || names[0] || "";
+  state._progEx = current;
+  const vol = weeklyVolume(state.selectedDate);
+  box.innerHTML = `
+    <label class="text-sm text-zinc-400">Exercise</label>
+    <select id="progEx" class="w-full bg-zinc-800 rounded-xl px-3 py-2 mt-1 mb-3">
+      ${names.map(n => `<option ${n===current?"selected":""}>${n}</option>`).join("")}
+    </select>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3">
+      <p class="text-xs text-zinc-400">Est. 1RM (Epley) · lb</p>
+      <canvas id="liftChart" height="180"></canvas>
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3">
+      <p class="text-xs text-zinc-400">Body weight · lb</p>
+      <canvas id="bwChart" height="140"></canvas>
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3">
+      <p class="text-xs text-zinc-400">Weekly volume week of ${vol.start}</p>
+      <p class="text-2xl font-semibold">${Math.round(vol.total).toLocaleString()} <span class="text-sm font-normal text-zinc-500">lb × reps</span></p>
+      <div class="mt-2 text-xs text-zinc-400 space-y-1">
+        ${Object.entries(vol.byDay).map(([d,v]) => `<div class="flex justify-between"><span>${d.slice(5)}</span><span>${Math.round(v).toLocaleString()}</span></div>`).join("")}
+      </div>
+    </div>
+    <div class="rounded-2xl border border-[#2a2c24] bg-[#12140f] p-3 mb-3">
+      <p class="text-xs text-zinc-400 mb-2">Focus lifts · best logged weight</p>
+      ${["Barbell Back Squat","Romanian Deadlift or Stiff-Leg Deadlift","Seated or Standing Overhead Press","Barbell or Chest-Supported Row","Pull-Ups or Lat Pulldown"].map(n=>{
+        const pr = prsFor(n);
+        return `<div class="flex justify-between py-1 text-sm"><span class="text-zinc-400 truncate mr-2">${n}</span><span>${pr.best?pr.best+" lb · "+pr.date:"—"}</span></div>`;
+      }).join("")}
+    </div>
+    <div id="progTable" class="text-sm mb-8"></div>
+  `;
+  box.querySelector("#progEx").onchange = e => { state._progEx = e.target.value; renderProgress(); };
+
+  const liftPts = Object.keys(state.data.logs).sort().map(d => {
+    const sets = state.data.logs[d].exercises?.[current];
+    const y = bestSet1RM(sets);
+    return y ? { x:d, y:Math.round(y), best:bestWeight(sets) } : null;
+  }).filter(Boolean);
+
+  destroyCharts();
+  state.charts.lift = new Chart(document.getElementById("liftChart"), {
+    type:"line",
+    data:{ labels: liftPts.map(p=>p.x.slice(5)), datasets:[{ label:"Est 1RM lb", data:liftPts.map(p=>p.y), borderColor:"#f59e0b", tension:.25, fill:true, backgroundColor:"rgba(245,158,11,.12)" }] },
+    options:{ plugins:{legend:{display:false}}, scales:{ y:{ ticks:{color:"#a1a1aa"} }, x:{ ticks:{color:"#a1a1aa"} } } }
+  });
+  const bwDates = Object.keys(state.data.bodyweight).sort();
+  state.charts.bw = new Chart(document.getElementById("bwChart"), {
+    type:"line",
+    data:{ labels: bwDates.map(d=>d.slice(5)), datasets:[{ data: bwDates.map(d=>state.data.bodyweight[d]), borderColor:"#38bdf8", tension:.25 }] },
+    options:{ plugins:{legend:{display:false}}, scales:{ y:{ ticks:{color:"#a1a1aa"} }, x:{ ticks:{color:"#a1a1aa"} } } }
+  });
+  box.querySelector("#progTable").innerHTML = `<h3 class="font-medium mb-2">Recent ${current}</h3>` +
+    (liftPts.slice(-16).reverse().map(p => `<div class="flex justify-between py-1 border-b border-zinc-800"><span class="text-zinc-400">${p.x}</span><span>${p.best} lb · 1RM ${p.y}</span></div>`).join("") || "<p class='text-zinc-500'>No logs yet.</p>");
+}
+
+function renderFoodProgress(box) {
+  const dates = Object.keys(state.data.foodLogs).filter(d => (state.data.foodLogs[d]||[]).length).sort();
+  const rows = dates.map(d => ({ d, ...foodTotals(d) }));
+  const n = rows.length || 1;
+  const avg = rows.reduce((a,r)=>({ cal:a.cal+r.cal, p:a.p+r.p, c:a.c+r.c, f:a.f+r.f }), {cal:0,p:0,c:0,f:0});
+  if (rows.length) { avg.cal/=rows.length; avg.p/=rows.length; avg.c/=rows.length; avg.f/=rows.length; }
+  else { avg.cal=avg.p=avg.c=avg.f=0; }
+
+  const last30 = rows.slice(-30);
+  box.innerHTML = `
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Avg calories</p><p class="text-xl font-semibold">${Math.round(avg.cal)}</p></div>
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Avg protein</p><p class="text-xl font-semibold">${Math.round(avg.p)}g</p></div>
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Avg fat</p><p class="text-xl font-semibold">${Math.round(avg.f)}g</p></div>
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Avg carbs</p><p class="text-xl font-semibold">${Math.round(avg.c)}g</p></div>
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3"><canvas id="foodChart" height="170"></canvas></div>
+    <h3 class="font-medium mb-2">Each day</h3>
+    <div class="text-sm mb-8">${rows.slice().reverse().map(r => `
+      <div class="flex justify-between gap-2 py-1.5 border-b border-zinc-800">
+        <span class="text-zinc-400">${r.d}</span>
+        <span>${Math.round(r.cal)} · ${Math.round(r.p)}p · ${Math.round(r.c)}c · ${Math.round(r.f)}f</span>
+      </div>`).join("") || "<p class='text-zinc-500'>No food logs yet.</p>"}</div>
+  `;
+  destroyCharts();
+  state.charts.food = new Chart(document.getElementById("foodChart"), {
+    type:"line",
+    data:{
+      labels: last30.map(r=>r.d.slice(5)),
+      datasets:[
+        { label:"kcal", data:last30.map(r=>Math.round(r.cal)), borderColor:"#f59e0b", yAxisID:"y", tension:.2 },
+        { label:"protein", data:last30.map(r=>Math.round(r.p)), borderColor:"#34d399", yAxisID:"y1", tension:.2 }
+      ]
+    },
+    options:{
+      plugins:{ legend:{ labels:{ color:"#a1a1aa" } } },
+      scales:{
+        y:{ ticks:{color:"#a1a1aa"}, title:{display:true,text:"kcal",color:"#a1a1aa"} },
+        y1:{ position:"right", grid:{drawOnChartArea:false}, ticks:{color:"#34d399"} },
+        x:{ ticks:{color:"#a1a1aa"} }
+      }
+    }
+  });
+}
+
+function destroyCharts() {
+  Object.values(state.charts).forEach(c => { try { c.destroy(); } catch {} });
+  state.charts = {};
+}
+function foodDay(dateStr) {
+  if (!state.data.foodLogs[dateStr]) state.data.foodLogs[dateStr] = [];
+  return state.data.foodLogs[dateStr];
+}
+
+function renderFood() {
+  const root = document.getElementById("view-food");
+  const dateStr = state.selectedDate;
+  const items = foodDay(dateStr);
+  const totals = foodTotals(dateStr);
+  const t = state.data.targets;
+  const supp = state.data.supplements[dateStr] || { creatine:false, omega:false, vitd:false };
+
+  root.innerHTML = `
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xl font-semibold">Food</h2>
+      <input type="date" id="foodDate" value="${dateStr}" class="bg-zinc-800 rounded-lg px-2 py-1 text-sm" />
+    </div>
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Calories</p><p class="text-xl font-semibold">${Math.round(totals.cal)} <span class="text-xs text-zinc-500">/ ${t.cal}</span></p></div>
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Protein</p><p class="text-xl font-semibold">${Math.round(totals.p)}g <span class="text-xs text-zinc-500">/ ${t.protein}g</span></p></div>
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Fat</p><p class="text-xl font-semibold">${Math.round(totals.f)}g <span class="text-xs text-zinc-500">/ ${t.fat||0}g</span></p></div>
+      <div class="rounded-2xl bg-zinc-900 border border-zinc-800 p-3"><p class="text-xs text-zinc-400">Carbs</p><p class="text-xl font-semibold">${Math.round(totals.c)}g <span class="text-xs text-zinc-500">/ ${t.carbs||0}g</span></p></div>
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-3">
+      <p class="text-sm text-zinc-400 mb-2">Supplements</p>
+      <div class="grid grid-cols-3 gap-2 text-sm">
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supC" ${supp.creatine?"checked":""}/> Creatine</label>
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supO" ${supp.omega?"checked":""}/> Omegas</label>
+        <label class="flex items-center gap-2 bg-zinc-800 rounded-lg px-2 py-2"><input type="checkbox" id="supD" ${supp.vitd?"checked":""}/> Vitamin D</label>
+      </div>
+    </div>
+    <input id="foodSearch" class="w-full bg-zinc-800 rounded-xl px-3 py-2 mb-3" placeholder="Search foods..." />
+    <div id="foodResults" class="mb-4 space-y-2"></div>
+    <h3 class="font-medium mb-2">Logged today</h3>
+    <div id="foodLogged" class="space-y-2 mb-6"></div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 mb-8">
+      <h3 class="font-medium mb-2">Add custom food</h3>
+      <div class="grid grid-cols-2 gap-2">
+        <input id="nfName" class="col-span-2 bg-zinc-800 rounded-lg px-3 py-2" placeholder="Name" />
+        <input id="nfCal" type="number" class="bg-zinc-800 rounded-lg px-3 py-2" placeholder="Calories per unit" />
+        <input id="nfP" type="number" class="bg-zinc-800 rounded-lg px-3 py-2" placeholder="Protein g" />
+        <input id="nfC" type="number" class="bg-zinc-800 rounded-lg px-3 py-2" placeholder="Carbs g" />
+        <input id="nfF" type="number" class="bg-zinc-800 rounded-lg px-3 py-2" placeholder="Fat g" />
+        <select id="nfUnit" class="bg-zinc-800 rounded-lg px-3 py-2"><option value="g">per gram</option><option value="ml">per ml</option><option value="each">per item</option></select>
+        <input id="nfServ" class="bg-zinc-800 rounded-lg px-3 py-2" placeholder="Label (1 g / 1 scoop)" />
+      </div>
+      <button id="saveFood" class="mt-3 w-full bg-zinc-100 text-zinc-950 font-semibold rounded-xl py-2">Save to library</button>
+    </div>
+  `;
+
+  const drawResults = (q="") => {
+    const box = root.querySelector("#foodResults");
+    const list = state.data.foods.filter(f => f.name.toLowerCase().includes(q.toLowerCase())).slice(0, 20);
+    box.innerHTML = list.map(f => {
+      const measured = f.unit === "g" || f.unit === "ml";
+      const defQty = measured ? 100 : 1;
+      return `<div class="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2">
+        <div class="flex-1 min-w-0">
+          <p class="text-sm truncate">${f.name}</p>
+          <p class="text-[11px] text-zinc-500">${measured ? `${f.cal} kcal/${f.unit}` : `${f.cal} kcal each`}</p>
+        </div>
+        <input data-qtyfor="${f.id}" type="number" step="${measured?1:0.5}" value="${defQty}" class="w-20 bg-zinc-800 rounded-lg px-2 py-1 text-sm" />
+        <span class="text-[11px] text-zinc-500 w-8">${f.unit==="each"?"qty":f.unit}</span>
+        <button data-add="${f.id}" class="text-sm bg-sky-500 text-zinc-950 font-semibold px-3 py-1 rounded-lg">Add</button>
+        <button data-removelib="${f.id}" class="text-zinc-500 text-sm px-1">✕</button>
+      </div>`;
+    }).join("") || `<p class="text-zinc-500 text-sm">No matches.</p>`;
+    box.querySelectorAll("[data-add]").forEach(b => b.onclick = () => {
+      const qtyInp = box.querySelector(`[data-qtyfor="${b.dataset.add}"]`);
+      const qty = Number(qtyInp?.value) || 1;
+      foodDay(dateStr).push({ id: b.dataset.add, qty });
+      scheduleSave(); renderFood();
+    });
+    box.querySelectorAll("[data-removelib]").forEach(b => b.onclick = () => {
+      if (!confirm("Remove this food from your library?")) return;
+      state.data.foods = state.data.foods.filter(x => x.id !== b.dataset.removelib);
+      scheduleSave(); renderFood();
+    });
+  };
+  drawResults();
+  root.querySelector("#foodSearch").oninput = e => drawResults(e.target.value);
+
+  root.querySelector("#foodLogged").innerHTML = items.map((it, idx) => {
+    const f = state.data.foods.find(x => x.id === it.id);
+    if (!f) return "";
+    return `<div class="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2">
+      <div class="flex-1"><p class="text-sm">${f.name}</p>
+      <p class="text-[11px] text-zinc-500">${Math.round(f.cal*it.qty)} kcal · ${Math.round(f.p*it.qty)}p</p></div>
+      <input data-qty="${idx}" type="number" step="0.1" value="${it.qty}" class="w-20 bg-zinc-800 rounded-lg px-2 py-1 text-sm" />
+      <span class="text-[11px] text-zinc-500">${f.unit==="each"?"qty":f.unit}</span>
+      <button data-del="${idx}" class="text-zinc-500 text-sm">✕</button>
+    </div>`;
+  }).join("") || `<p class="text-zinc-500 text-sm">Nothing logged.</p>`;
+
+  root.querySelectorAll("[data-qty]").forEach(inp => inp.onchange = () => {
+    items[Number(inp.dataset.qty)].qty = Number(inp.value)||0; scheduleSave(); renderFood();
+  });
+  root.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { items.splice(Number(b.dataset.del),1); scheduleSave(); renderFood(); });
+  root.querySelector("#foodDate").onchange = e => { state.selectedDate = e.target.value; renderFood(); };
+  const saveSupp = () => {
+    state.data.supplements[dateStr] = {
+      creatine: root.querySelector("#supC").checked,
+      omega: root.querySelector("#supO").checked,
+      vitd: root.querySelector("#supD").checked
+    };
+    scheduleSave();
+  };
+  root.querySelector("#supC").onchange = saveSupp;
+  root.querySelector("#supO").onchange = saveSupp;
+  root.querySelector("#supD").onchange = saveSupp;
+  root.querySelector("#saveFood").onclick = () => {
+    const name = root.querySelector("#nfName").value.trim(); if (!name) return;
+    const unit = root.querySelector("#nfUnit").value;
+    state.data.foods.unshift({
+      id: "custom_"+Date.now(), name,
+      cal: Number(root.querySelector("#nfCal").value)||0,
+      p: Number(root.querySelector("#nfP").value)||0,
+      c: Number(root.querySelector("#nfC").value)||0,
+      f: Number(root.querySelector("#nfF").value)||0,
+      unit, serving: root.querySelector("#nfServ").value.trim() || (unit==="each"?"1 item":"1 "+unit)
+    });
+    scheduleSave(); renderFood();
+  };
+}
+
+function renderSettings() {
+  const root = document.getElementById("view-settings");
+  const t = state.data.targets;
+  root.innerHTML = `
+    <h2 class="text-xl font-semibold mb-3">Settings</h2>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 mb-4">
+      <h3 class="font-medium mb-2">Targets</h3>
+      <label class="text-xs text-zinc-400">Calories</label>
+      <input id="tCal" type="number" value="${t.cal}" class="w-full bg-zinc-800 rounded-lg px-3 py-2 mb-2" />
+      <label class="text-xs text-zinc-400">Protein (g)</label>
+      <input id="tP" type="number" value="${t.protein}" class="w-full bg-zinc-800 rounded-lg px-3 py-2 mb-2" />
+      <label class="text-xs text-zinc-400">Fat (g)</label>
+      <input id="tF" type="number" value="${t.fat||0}" class="w-full bg-zinc-800 rounded-lg px-3 py-2 mb-2" />
+      <label class="text-xs text-zinc-400">Carbs (g)</label>
+      <input id="tC" type="number" value="${t.carbs||0}" class="w-full bg-zinc-800 rounded-lg px-3 py-2" />
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 mb-4">
+      <h3 class="font-medium mb-1">Firebase sync</h3>
+      <p class="text-xs text-zinc-400 mb-2">Status: <span id="syncDetail">${document.getElementById("headerSub").textContent}</span></p>
+      <ol class="text-xs text-zinc-400 list-decimal pl-4 space-y-1 mb-3">
+        <li>Create a project at console.firebase.google.com</li>
+        <li>Add a Web app and copy firebaseConfig</li>
+        <li>Enable Authentication → Google</li>
+        <li>Create Firestore; allow the signed-in user to read/write users/{uid}</li>
+        <li>Paste config, save, sign in on phone and laptop</li>
+      </ol>
+      <textarea id="fbCfg" rows="7" class="w-full bg-zinc-800 rounded-lg px-3 py-2 text-xs font-mono" placeholder='{"apiKey":"..."}'>${state.data.firebaseConfig ? JSON.stringify(state.data.firebaseConfig,null,2) : ""}</textarea>
+      <div class="flex gap-2 mt-3">
+        <button id="saveFb" class="flex-1 bg-sky-500 text-zinc-950 font-semibold rounded-xl py-2">Save config</button>
+        <button id="btnIn" class="flex-1 bg-zinc-100 text-zinc-950 font-semibold rounded-xl py-2">Google</button>
+        <button id="btnOut" class="px-3 bg-zinc-800 rounded-xl">Out</button>
+      </div>
+      <p class="text-xs text-zinc-400 mt-4 mb-2">Or use email (enable Email/Password in Firebase Authentication → Sign-in method)</p>
+      <input id="authEmail" type="email" class="w-full bg-zinc-800 rounded-lg px-3 py-2 mb-2" placeholder="Email" />
+      <input id="authPass" type="password" class="w-full bg-zinc-800 rounded-lg px-3 py-2 mb-2" placeholder="Password (6+ characters)" />
+      <div class="flex gap-2">
+        <button id="btnCreate" class="flex-1 bg-zinc-800 rounded-xl py-2 text-sm">Create account</button>
+        <button id="btnEmail" class="flex-1 bg-zinc-100 text-zinc-950 font-semibold rounded-xl py-2 text-sm">Sign in with email</button>
+      </div>
+    </div>
+    <div class="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 mb-8">
+      <h3 class="font-medium mb-2">Backup</h3>
+      <div class="flex gap-2">
+        <button id="exp" class="flex-1 bg-zinc-800 rounded-xl py-2">Export JSON</button>
+        <label class="flex-1 bg-zinc-800 rounded-xl py-2 text-center cursor-pointer">Import JSON<input id="imp" type="file" accept="application/json" class="hidden" /></label>
+      </div>
+    </div>
+  `;
+  root.querySelector("#tCal").onchange = e => { state.data.targets.cal = Number(e.target.value)||0; scheduleSave(); };
+  root.querySelector("#tP").onchange = e => { state.data.targets.protein = Number(e.target.value)||0; scheduleSave(); };
+  root.querySelector("#tF").onchange = e => { state.data.targets.fat = Number(e.target.value)||0; scheduleSave(); };
+  root.querySelector("#tC").onchange = e => { state.data.targets.carbs = Number(e.target.value)||0; scheduleSave(); };
+  root.querySelector("#saveFb").onclick = () => {
+    try {
+      const raw = root.querySelector("#fbCfg").value.trim();
+      state.data.firebaseConfig = raw ? JSON.parse(raw) : null;
+      saveLocal(); location.reload();
+    } catch { alert("Invalid JSON"); }
+  };
+  root.querySelector("#btnIn").onclick = signInGoogle;
+  root.querySelector("#btnOut").onclick = signOut;
+  root.querySelector("#btnCreate").onclick = () => signInEmail(true);
+  root.querySelector("#btnEmail").onclick = () => signInEmail(false);
+  root.querySelector("#exp").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(state.data,null,2)],{type:"application/json"}));
+    a.download = "the-logbook-backup.json"; a.click();
+  };
+  root.querySelector("#imp").onchange = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    const keep = state.data.firebaseConfig;
+    state.data = { ...defaultData(), ...JSON.parse(await file.text()), firebaseConfig: keep };
+    scheduleSave(); render();
+  };
+}
+
+document.querySelectorAll(".navbtn").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+document.getElementById("todayJump").onclick = () => {
+  state.selectedDate = isoDate(new Date());
+  state.calMonth = new Date();
+  showTab("today");
+};
+document.getElementById("openSettings").onclick = () => showTab("settings");
+
+state.data = loadLocal();
+initFirebaseIfConfigured();
+setSyncStatus();
+render();
+</script>
+</body>
+</html>
