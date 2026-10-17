@@ -140,7 +140,7 @@
   <div id="bootSplash" aria-hidden="true">
     <p class="stamp">THE LOGBOOK</p>
     <div class="rule"></div>
-    <p style="font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#6b6154">Field notes</p><p style="font-size:11px;letter-spacing:.2em;color:#8a7e70;margin-top:8px">v33</p>
+    <p style="font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#6b6154">Field notes</p><p style="font-size:11px;letter-spacing:.2em;color:#8a7e70;margin-top:8px">v34</p>
   </div>
   <header class="sticky top-0 z-30 bg-field-800/95 backdrop-blur border-b border-field-600">
     <div class="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
@@ -150,7 +150,7 @@
       <div class="min-w-0 text-center">
         <h1 class="stamp text-2xl leading-none text-paper-100">THE LOGBOOK</h1>
         <p class="text-[9px] tracking-[0.28em] text-brass uppercase mt-0.5">Daily split. Mission focused.</p>
-        <p id="headerSub" class="text-[10px] text-field-400 truncate mt-0.5 font-mono">v33</p>
+        <p id="headerSub" class="text-[10px] text-field-400 truncate mt-0.5 font-mono">v34</p>
       </div>
       <button id="todayJump" class="shrink-0 text-brass p-1" aria-label="Today">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/><path d="M9 14h2v2H9z"/></svg>
@@ -254,7 +254,10 @@
   </nav>
 
 <script>
-const APP_VERSION = "v33";
+const APP_VERSION = "v34";
+// Read-only meal-plan export: index.html?export=mealplan (or #export). Never writes to localStorage or Firestore.
+const EXPORT_MODE = new URLSearchParams(location.search).get("export") === "mealplan" || location.hash === "#export";
+window.addEventListener("hashchange", () => { if ((location.hash === "#export") !== EXPORT_MODE) location.reload(); });
 const APP_URL = "https://jacksonpjwilson-dev.github.io/The-Logbook/";
 const CHART_SRC = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
 let chartPromise = null;
@@ -540,8 +543,9 @@ function loadLocal() {
     return migrateFoodLogs({ ...defaultData(), ...JSON.parse(raw) });
   } catch { return defaultData(); }
 }
-function saveLocal() { localStorage.setItem(LS_KEY, JSON.stringify(state.data)); }
+function saveLocal() { if (EXPORT_MODE) return; localStorage.setItem(LS_KEY, JSON.stringify(state.data)); }
 function scheduleSave() {
+  if (EXPORT_MODE) return;
   stampChanges();
   saveLocal();
   state.pendingPush = true;
@@ -818,10 +822,12 @@ function initFirebaseIfConfigured() {
       if (e && e.code) setSyncStatus(e.code + ": " + e.message);
     });
     state.firebase.auth.onAuthStateChanged(async (user) => {
+      state.authResolved = true;
       if (!user) { state.firebase.uid = null; setSyncStatus(); render(); return; }
       state.firebase.uid = user.uid;
       setSyncStatus("Syncing…");
-      await pullCloud();
+      try { await pullCloud(); } catch (e) { state.exportError = e.message || String(e); }
+      state.exportReady = true;
       state.lastSync = Date.now();
       setSyncStatus();
       render();
@@ -884,6 +890,13 @@ function adoptMerged(merged) {
 }
 async function pullCloud() {
   if (!state.firebase.uid) return;
+  if (EXPORT_MODE) {
+    // Read-only: merge the cloud copy into memory only (cloud wins ties; newer local edits still win). No stamping, no local save, no push.
+    const snap = await state.firebase.db.collection("users").doc(state.firebase.uid).get();
+    const cloud = snap.exists ? snap.data().payload : null;
+    if (cloud) state.data = migrateFoodLogs({ ...defaultData(), ...mergeData(cloud, state.data), firebaseConfig: state.data.firebaseConfig });
+    return;
+  }
   // Flush: cancel the pending debounced push and stamp any un-stamped local edits so they take part in the merge.
   clearTimeout(state.saveTimer);
   stampChanges();
@@ -893,7 +906,7 @@ async function pullCloud() {
   await pushCloud();
 }
 async function pushCloud() {
-  if (!state.firebase.uid) return;
+  if (EXPORT_MODE || !state.firebase.uid) return;
   const ref = state.firebase.db.collection("users").doc(state.firebase.uid);
   try {
     let merged = null;
@@ -949,7 +962,39 @@ async function signInEmail(create) {
 }
 async function signOut() { if (state.firebase.auth) await state.firebase.auth.signOut(); }
 
+function mealPlanExport() {
+  const tpl = state.data.weekTemplate || {};
+  // Collect any food ids referenced anywhere inside weekTemplate so amounts can be turned into macros.
+  const ids = new Set();
+  const foodIds = new Set((state.data.foods || []).map(f => f.id));
+  (function walk(v) {
+    if (typeof v === "string") { if (foodIds.has(v)) ids.add(v); }
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  })(tpl);
+  const foods = (state.data.foods || []).filter(f => ids.has(f.id))
+    .map(f => ({ id: f.id, name: f.name, unit: f.unit, serving: f.serving, cal: f.cal, p: f.p, c: f.c || 0, f: f.f || 0 }));
+  return { app: "The Logbook", appVersion: APP_VERSION, generatedAt: new Date().toISOString(),
+    note: "Food macros are per 1 unit (per gram when unit is g).",
+    targets: state.data.targets, weekTemplate: tpl, foods };
+}
+function renderExport() {
+  let box = document.getElementById("exportView");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "exportView";
+    box.style.cssText = "position:fixed;inset:0;z-index:99999;overflow:auto;background:#141414;color:#efe6d6;padding:16px;font-family:ui-monospace,monospace;font-size:13px";
+    document.body.appendChild(box);
+  }
+  const cfgOk = !!state.data?.firebaseConfig?.apiKey;
+  if (cfgOk && !state.authResolved) { box.innerHTML = `<p id="mealplan-status">Loading…</p>`; return; }
+  if (!state.firebase.uid) { box.innerHTML = `<p id="mealplan-status">Sign in first</p>`; return; }
+  if (!state.exportReady) { box.innerHTML = `<p id="mealplan-status">Loading…</p>`; return; }
+  box.innerHTML = `<p id="mealplan-status">${state.exportError ? "Cloud read failed, showing this device's copy: " + state.exportError : "Ready"}</p><pre id="mealplan-json" style="white-space:pre-wrap;word-break:break-word"></pre>`;
+  box.querySelector("#mealplan-json").textContent = JSON.stringify(mealPlanExport(), null, 2);
+}
 function showTab(tab) {
+  if (EXPORT_MODE) { renderExport(); return; }
   if (tab === "progress") tab = "history";
   state.tab = tab;
   document.querySelectorAll(".navbtn").forEach(b => {
@@ -2324,6 +2369,12 @@ function renderSettings() {
       </div>
     </div>
     <div class="rounded-2xl border border-field-600 bg-field-800 p-4 mb-8">
+      <h3 class="font-medium mb-2">Export meal plan</h3>
+      <p class="text-xs text-field-400 mb-2">Meal plan + macro targets only. No logs, weights or photos.</p>
+      <div class="flex gap-2 mb-4">
+        <button id="mpCopy" class="flex-1 bg-field-700 rounded-xl py-2">Copy</button>
+        <button id="mpDownload" class="flex-1 bg-field-700 rounded-xl py-2">Download</button>
+      </div>
       <h3 class="font-medium mb-2">Backup</h3>
       <div class="flex gap-2">
         <button id="exp" class="flex-1 bg-field-700 rounded-xl py-2">Export JSON</button>
@@ -2339,6 +2390,17 @@ function renderSettings() {
   root.querySelector("#btnOut").onclick = signOut;
   root.querySelector("#btnCreate").onclick = () => signInEmail(true);
   root.querySelector("#btnEmail").onclick = () => signInEmail(false);
+  root.querySelector("#mpCopy").onclick = async () => {
+    const txt = JSON.stringify(mealPlanExport(), null, 2);
+    try { await navigator.clipboard.writeText(txt); alert("Meal plan copied."); }
+    catch { prompt("Copy the meal plan:", txt); }
+  };
+  root.querySelector("#mpDownload").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(mealPlanExport(), null, 2)], { type: "application/json" }));
+    a.download = "the-logbook-mealplan-" + isoDate(new Date()) + ".json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
   root.querySelector("#exp").onclick = () => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(state.data,null,2)],{type:"application/json"}));
@@ -2374,7 +2436,7 @@ document.getElementById("scanSheet").onclick = (e) => { if (e.target.id === "sca
 document.getElementById("scanLookup").onclick = () => lookupBarcode(document.getElementById("scanCode").value);
 document.getElementById("scanCode").onkeydown = e => { if (e.key === "Enter") lookupBarcode(e.target.value); };
 
-if ("serviceWorker" in navigator) {
+if ("serviceWorker" in navigator && !EXPORT_MODE) {
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
 }
 function hideSplash() {
@@ -2397,7 +2459,7 @@ try {
 } catch (e) { console.error(e); }
 setTimeout(hideSplash, 1200);
 // Chart.js no longer blocks first paint; fetch it in the background so the Today donut appears shortly after.
-setTimeout(() => loadChart().then(() => { if (state.tab === "today") render(); }).catch(() => {}), 300);
+if (!EXPORT_MODE) setTimeout(() => loadChart().then(() => { if (state.tab === "today") render(); }).catch(() => {}), 300);
 </script>
 </body>
 </html>
