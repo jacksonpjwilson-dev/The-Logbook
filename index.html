@@ -256,8 +256,18 @@
 <script>
 const APP_VERSION = "v34";
 // Read-only meal-plan export: index.html?export=mealplan (or #export). Never writes to localStorage or Firestore.
-const EXPORT_MODE = new URLSearchParams(location.search).get("export") === "mealplan" || location.hash === "#export";
-window.addEventListener("hashchange", () => { if ((location.hash === "#export") !== EXPORT_MODE) location.reload(); });
+// Full read-only export: index.html?export=all (or #export-all). Everything except photos and auth/config.
+const EXPORT_KIND = (() => {
+  const q = new URLSearchParams(location.search).get("export");
+  if (q === "all" || location.hash === "#export-all") return "all";
+  if (q === "mealplan" || location.hash === "#export") return "mealplan";
+  return null;
+})();
+const EXPORT_MODE = !!EXPORT_KIND;
+window.addEventListener("hashchange", () => {
+  const h = location.hash === "#export-all" ? "all" : location.hash === "#export" ? "mealplan" : null;
+  if (!new URLSearchParams(location.search).get("export") && h !== EXPORT_KIND) location.reload();
+});
 const APP_URL = "https://jacksonpjwilson-dev.github.io/The-Logbook/";
 const CHART_SRC = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
 let chartPromise = null;
@@ -1004,6 +1014,28 @@ function mealPlanExport() {
     recentFoodLogs: recentLogs
   };
 }
+function fullExport() {
+  const data = JSON.parse(JSON.stringify(state.data));
+  delete data.firebaseConfig;
+  let photos = 0;
+  const strip = (v) => {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) return v.map(strip);
+    if (v && typeof v === "object") {
+      const out = {};
+      Object.entries(v).forEach(([k, x]) => {
+        if (typeof x === "string" && /^data:image\//.test(x)) { photos++; out[k + "Count"] = 1; return; }
+        if (/token|apikey|password|secret/i.test(k)) return;
+        out[k] = strip(x);
+      });
+      return out;
+    }
+    return v;
+  };
+  return { app: "The Logbook", appVersion: APP_VERSION, generatedAt: new Date().toISOString(),
+    note: "Full read-only copy of the user's Logbook data. Photos are removed: each one is replaced by <field>Count: 1, and photosRemoved is the total. Auth and Firebase config are excluded. Set weights are lb; food macros are per 1 unit (per gram when unit is g).",
+    ...(() => { const d = strip(data); return { photosRemoved: photos, data: d }; })() };
+}
 function renderExport() {
   let box = document.getElementById("exportView");
   if (!box) {
@@ -1013,11 +1045,13 @@ function renderExport() {
     document.body.appendChild(box);
   }
   const cfgOk = !!state.data?.firebaseConfig?.apiKey;
-  if (cfgOk && !state.authResolved) { box.innerHTML = `<p id="mealplan-status">Loading…</p>`; return; }
-  if (!state.firebase.uid) { box.innerHTML = `<p id="mealplan-status">Sign in first</p>`; return; }
-  if (!state.exportReady) { box.innerHTML = `<p id="mealplan-status">Loading…</p>`; return; }
-  box.innerHTML = `<p id="mealplan-status">${state.exportError ? "Cloud read failed, showing this device's copy: " + state.exportError : "Ready"}</p><pre id="mealplan-json" style="white-space:pre-wrap;word-break:break-word"></pre>`;
-  box.querySelector("#mealplan-json").textContent = JSON.stringify(mealPlanExport(), null, 2);
+  const sid = EXPORT_KIND === "all" ? "export-status" : "mealplan-status";
+  const pid = EXPORT_KIND === "all" ? "export-json" : "mealplan-json";
+  if (cfgOk && !state.authResolved) { box.innerHTML = `<p id="${sid}">Loading…</p>`; return; }
+  if (!state.firebase.uid) { box.innerHTML = `<p id="${sid}">Sign in first</p>`; return; }
+  if (!state.exportReady) { box.innerHTML = `<p id="${sid}">Loading…</p>`; return; }
+  box.innerHTML = `<p id="${sid}">${state.exportError ? "Cloud read failed, showing this device's copy: " + state.exportError : "Ready"}</p><pre id="${pid}" style="white-space:pre-wrap;word-break:break-word"></pre>`;
+  box.querySelector("#" + pid).textContent = JSON.stringify(EXPORT_KIND === "all" ? fullExport() : mealPlanExport(), null, 2);
 }
 function showTab(tab) {
   if (EXPORT_MODE) { renderExport(); return; }
