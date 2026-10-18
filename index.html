@@ -140,7 +140,7 @@
   <div id="bootSplash" aria-hidden="true">
     <p class="stamp">THE LOGBOOK</p>
     <div class="rule"></div>
-    <p style="font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#6b6154">Field notes</p><p style="font-size:11px;letter-spacing:.2em;color:#8a7e70;margin-top:8px">v33</p>
+    <p style="font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#6b6154">Field notes</p><p style="font-size:11px;letter-spacing:.2em;color:#8a7e70;margin-top:8px">v34</p>
   </div>
   <header class="sticky top-0 z-30 bg-field-800/95 backdrop-blur border-b border-field-600">
     <div class="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
@@ -150,7 +150,7 @@
       <div class="min-w-0 text-center">
         <h1 class="stamp text-2xl leading-none text-paper-100">THE LOGBOOK</h1>
         <p class="text-[9px] tracking-[0.28em] text-brass uppercase mt-0.5">Daily split. Mission focused.</p>
-        <p id="headerSub" class="text-[10px] text-field-400 truncate mt-0.5 font-mono">v33</p>
+        <p id="headerSub" class="text-[10px] text-field-400 truncate mt-0.5 font-mono">v34</p>
       </div>
       <button id="todayJump" class="shrink-0 text-brass p-1" aria-label="Today">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/><path d="M9 14h2v2H9z"/></svg>
@@ -254,7 +254,20 @@
   </nav>
 
 <script>
-const APP_VERSION = "v33";
+const APP_VERSION = "v34";
+// Read-only meal-plan export: index.html?export=mealplan (or #export). Never writes to localStorage or Firestore.
+// Full read-only export: index.html?export=all (or #export-all). Everything except photos and auth/config.
+const EXPORT_KIND = (() => {
+  const q = new URLSearchParams(location.search).get("export");
+  if (q === "all" || location.hash === "#export-all") return "all";
+  if (q === "mealplan" || location.hash === "#export") return "mealplan";
+  return null;
+})();
+const EXPORT_MODE = !!EXPORT_KIND;
+window.addEventListener("hashchange", () => {
+  const h = location.hash === "#export-all" ? "all" : location.hash === "#export" ? "mealplan" : null;
+  if (!new URLSearchParams(location.search).get("export") && h !== EXPORT_KIND) location.reload();
+});
 const APP_URL = "https://jacksonpjwilson-dev.github.io/The-Logbook/";
 const CHART_SRC = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
 let chartPromise = null;
@@ -489,6 +502,7 @@ function defaultData() {
     supplements: {}, sleep: {},
     meals: DEFAULT_MEALS.map(m => ({ ...m })),
     barcodes: {},
+    pantry: [],
     split: [],
     exerciseLib: [],
     dayPlan: {},
@@ -509,6 +523,7 @@ const DEFAULT_TARGETS = { cal:3800, protein:200, fat:160, carbs:400 };
 function migrateFoodLogs(data) {
   if (!Array.isArray(data.foods) || !data.foods.length) data.foods = DEFAULT_FOODS;
   data.foods = data.foods.filter(f => !BANNED_FOODS.has(f.id));
+  if (!Array.isArray(data.pantry)) data.pantry = [];
   ["supplements","sleep","bodyweight","logs","foodLogs","overrides","stamps"].forEach(k => { if (!data[k] || typeof data[k] !== "object") data[k] = {}; });
   const t = (data.targets && typeof data.targets === "object") ? data.targets : {};
   data.targets = {};
@@ -540,8 +555,9 @@ function loadLocal() {
     return migrateFoodLogs({ ...defaultData(), ...JSON.parse(raw) });
   } catch { return defaultData(); }
 }
-function saveLocal() { localStorage.setItem(LS_KEY, JSON.stringify(state.data)); }
+function saveLocal() { if (EXPORT_MODE) return; localStorage.setItem(LS_KEY, JSON.stringify(state.data)); }
 function scheduleSave() {
+  if (EXPORT_MODE) return;
   stampChanges();
   saveLocal();
   state.pendingPush = true;
@@ -818,10 +834,12 @@ function initFirebaseIfConfigured() {
       if (e && e.code) setSyncStatus(e.code + ": " + e.message);
     });
     state.firebase.auth.onAuthStateChanged(async (user) => {
+      state.authResolved = true;
       if (!user) { state.firebase.uid = null; setSyncStatus(); render(); return; }
       state.firebase.uid = user.uid;
       setSyncStatus("Syncing…");
-      await pullCloud();
+      try { await pullCloud(); } catch (e) { state.exportError = e.message || String(e); }
+      state.exportReady = true;
       state.lastSync = Date.now();
       setSyncStatus();
       render();
@@ -831,7 +849,7 @@ function initFirebaseIfConfigured() {
 
 // ---- Sync: per-day / per-field timestamps, merged on both pull and push ----
 const DAY_KEYS = ["logs","bodyweight","foodLogs","supplements","sleep","dayPlan","overrides"];
-const GLOBAL_KEYS = ["weekTemplate","foods","meals","barcodes","split","exerciseLib","targets"];
+const GLOBAL_KEYS = ["weekTemplate","foods","meals","barcodes","split","exerciseLib","targets","pantry"];
 function syncSlices(data) {
   const out = {};
   const dates = new Set();
@@ -884,6 +902,13 @@ function adoptMerged(merged) {
 }
 async function pullCloud() {
   if (!state.firebase.uid) return;
+  if (EXPORT_MODE) {
+    // Read-only: merge the cloud copy into memory only (cloud wins ties; newer local edits still win). No stamping, no local save, no push.
+    const snap = await state.firebase.db.collection("users").doc(state.firebase.uid).get();
+    const cloud = snap.exists ? snap.data().payload : null;
+    if (cloud) state.data = migrateFoodLogs({ ...defaultData(), ...mergeData(cloud, state.data), firebaseConfig: state.data.firebaseConfig });
+    return;
+  }
   // Flush: cancel the pending debounced push and stamp any un-stamped local edits so they take part in the merge.
   clearTimeout(state.saveTimer);
   stampChanges();
@@ -893,7 +918,7 @@ async function pullCloud() {
   await pushCloud();
 }
 async function pushCloud() {
-  if (!state.firebase.uid) return;
+  if (EXPORT_MODE || !state.firebase.uid) return;
   const ref = state.firebase.db.collection("users").doc(state.firebase.uid);
   try {
     let merged = null;
@@ -949,7 +974,87 @@ async function signInEmail(create) {
 }
 async function signOut() { if (state.firebase.auth) await state.firebase.auth.signOut(); }
 
+function mealPlanExport() {
+  const today = isoDate(new Date());
+  const from = addDays(today, -13);
+  const foods = state.data.foods || [];
+  const byId = id => foods.find(f => f.id === id);
+  const days = Object.keys(state.data.foodLogs || {}).filter(d => d >= from && d <= today && (state.data.foodLogs[d] || []).length).sort();
+  const recentLogs = [];
+  const agg = {};
+  days.forEach(d => (state.data.foodLogs[d] || []).forEach(it => {
+    const f = byId(it.id); const qty = Number(it.qty) || 0;
+    recentLogs.push({ date: d, food: f ? f.name : it.id, qty, unit: f ? (f.unit === "each" ? "item" : f.unit) : null });
+    const a = agg[it.id] || (agg[it.id] = { total: 0, days: new Set(), meals: {} });
+    a.total += qty; a.days.add(d); const m = mealLabel(normalizeMeal(it.meal)); a.meals[m] = (a.meals[m] || 0) + 1;
+  }));
+  const n = days.length || 1;
+  const typicalItems = Object.entries(agg).map(([id, a]) => {
+    const f = byId(id) || { name: id, unit: null, cal: 0, p: 0, c: 0, f: 0 };
+    const avg = a.total / n;
+    return { foodId: id, food: f.name, unit: f.unit === "each" ? "item" : f.unit,
+      avgQtyPerDay: Math.round(avg * 10) / 10, loggedOnDays: a.days.size,
+      usualMeal: Object.entries(a.meals).sort((x, y) => y[1] - x[1])[0][0],
+      perUnit: { cal: f.cal, p: f.p, c: f.c || 0, f: f.f || 0 } };
+  }).sort((x, y) => y.loggedOnDays - x.loggedOnDays || y.avgQtyPerDay - x.avgQtyPerDay);
+  const tot = typicalItems.reduce((t, x) => { t.cal += x.perUnit.cal * x.avgQtyPerDay; t.p += x.perUnit.p * x.avgQtyPerDay; t.c += x.perUnit.c * x.avgQtyPerDay; t.f += x.perUnit.f * x.avgQtyPerDay; return t; }, { cal:0, p:0, c:0, f:0 });
+  return { app: "The Logbook", appVersion: APP_VERSION, generatedAt: new Date().toISOString(),
+    targets: state.data.targets,
+    typicalDay: {
+      explanation: "The Logbook has no saved meal plan: meals are logged day by day into meal slots, and 'Eat next' suggestions are calculated live from what's left of the targets. This is the user's typical day, averaged from food logged over the last 14 days. avgQtyPerDay = total logged / number of days with any food logged (in the food's unit: g, ml or item). perUnit macros are per 1 unit.",
+      window: { from, to: today, daysWithFood: days.length },
+      mealSlots: meals().map(m => m.label),
+      items: typicalItems,
+      avgTotals: { cal: Math.round(tot.cal), protein: Math.round(tot.p), carbs: Math.round(tot.c), fat: Math.round(tot.f) }
+    },
+    pantry: (state.data.pantry || []).map(it => { const st = pantryStatus(it); return {
+      name: it.name, onHand: st.onHand, unit: it.unit, lowAt: Number(it.low) || 0, low: st.low,
+      avgUsePerDay14: st.perDay, estDaysLeft: st.daysLeft,
+      linkedFoods: (it.foods || []).map(m => ({ food: (byId(m.foodId) || {}).name || m.foodId, perFoodUnit: m.per })) }; }),
+    recentFoodLogs: recentLogs
+  };
+}
+function fullExport() {
+  const data = JSON.parse(JSON.stringify(state.data));
+  delete data.firebaseConfig;
+  let photos = 0;
+  const strip = (v) => {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) return v.map(strip);
+    if (v && typeof v === "object") {
+      const out = {};
+      Object.entries(v).forEach(([k, x]) => {
+        if (typeof x === "string" && /^data:image\//.test(x)) { photos++; out[k + "Count"] = 1; return; }
+        if (/token|apikey|password|secret/i.test(k)) return;
+        out[k] = strip(x);
+      });
+      return out;
+    }
+    return v;
+  };
+  return { app: "The Logbook", appVersion: APP_VERSION, generatedAt: new Date().toISOString(),
+    note: "Full read-only copy of the user's Logbook data. Photos are removed: each one is replaced by <field>Count: 1, and photosRemoved is the total. Auth and Firebase config are excluded. Set weights are lb; food macros are per 1 unit (per gram when unit is g).",
+    ...(() => { const d = strip(data); return { photosRemoved: photos, data: d }; })() };
+}
+function renderExport() {
+  let box = document.getElementById("exportView");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "exportView";
+    box.style.cssText = "position:fixed;inset:0;z-index:99999;overflow:auto;background:#141414;color:#efe6d6;padding:16px;font-family:ui-monospace,monospace;font-size:13px";
+    document.body.appendChild(box);
+  }
+  const cfgOk = !!state.data?.firebaseConfig?.apiKey;
+  const sid = EXPORT_KIND === "all" ? "export-status" : "mealplan-status";
+  const pid = EXPORT_KIND === "all" ? "export-json" : "mealplan-json";
+  if (cfgOk && !state.authResolved) { box.innerHTML = `<p id="${sid}">Loading…</p>`; return; }
+  if (!state.firebase.uid) { box.innerHTML = `<p id="${sid}">Sign in first</p>`; return; }
+  if (!state.exportReady) { box.innerHTML = `<p id="${sid}">Loading…</p>`; return; }
+  box.innerHTML = `<p id="${sid}">${state.exportError ? "Cloud read failed, showing this device's copy: " + state.exportError : "Ready"}</p><pre id="${pid}" style="white-space:pre-wrap;word-break:break-word"></pre>`;
+  box.querySelector("#" + pid).textContent = JSON.stringify(EXPORT_KIND === "all" ? fullExport() : mealPlanExport(), null, 2);
+}
 function showTab(tab) {
+  if (EXPORT_MODE) { renderExport(); return; }
   if (tab === "progress") tab = "history";
   state.tab = tab;
   document.querySelectorAll(".navbtn").forEach(b => {
@@ -2190,6 +2295,7 @@ function renderFood() {
         return `<div class="flex justify-between py-1.5 meal-row"><span class="uppercase tracking-wider">${m.label}</span><span class="font-mono">${mt.cal?Math.round(mt.cal)+" kcal · "+Math.round(mt.p)+"p":"—"}</span></div>`;
       }).join("")}
     </div>
+    <div id="pantryBox"></div>
     <div class="rounded-2xl border border-field-600 bg-field-800 p-3 mb-8">
       <h3 class="font-medium mb-2">Add custom food</h3>
       <div class="grid grid-cols-2 gap-2">
@@ -2289,6 +2395,104 @@ function renderFood() {
     });
     scheduleSave(); renderFood();
   };
+  renderPantry(root.querySelector("#pantryBox"));
+}
+
+// ---- Pantry (stock tracking) ----
+// Each item: { id, name, unit, low, since, ledger:[{date, qty, kind:"start"|"purchase"|"adjust"}], foods:[{foodId, per}] }
+// On hand = sum(ledger) - usage, where usage = food logged on/after `since` x `per` (pantry units per 1 food unit).
+// Usage is derived from the food log, so editing or deleting a logged food automatically corrects stock.
+function escHtml(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+function pantryUsage(item, fromDate, toDate) {
+  const map = {}; (item.foods || []).forEach(m => { map[m.foodId] = Number(m.per) || 0; });
+  let used = 0;
+  Object.entries(state.data.foodLogs || {}).forEach(([d, items]) => {
+    if (d < (item.since || "0000") || (fromDate && d < fromDate) || (toDate && d > toDate)) return;
+    (items || []).forEach(it => { if (map[it.id]) used += (Number(it.qty) || 0) * map[it.id]; });
+  });
+  return used;
+}
+function pantryStatus(item) {
+  const today = isoDate(new Date());
+  const added = (item.ledger || []).reduce((n, e) => n + (Number(e.qty) || 0), 0);
+  const onHand = Math.round((added - pantryUsage(item)) * 100) / 100;
+  const from = addDays(today, -13);
+  const used14 = pantryUsage(item, from > (item.since || "") ? from : item.since, today);
+  const days = Math.max(1, Math.min(14, Math.round((parseISO(today) - parseISO(from > (item.since||"") ? from : item.since)) / 864e5) + 1));
+  const perDay = used14 / days;
+  return { onHand, low: onHand <= (Number(item.low) || 0), perDay: Math.round(perDay * 100) / 100,
+    daysLeft: perDay > 0 ? Math.max(0, Math.floor(onHand / perDay)) : null };
+}
+function renderPantry(box) {
+  if (!box) return;
+  const items = state.data.pantry || [];
+  const foods = state.data.foods || [];
+  const foodName = id => (foods.find(f => f.id === id) || {}).name || id;
+  box.innerHTML = `
+    <div class="rounded-2xl border border-field-600 bg-field-800 p-3 mb-4" id="pantry">
+      <h3 class="font-medium mb-1">Pantry</h3>
+      <p class="text-[11px] text-field-400 mb-3">Stock goes down automatically when you log a linked food.</p>
+      <div class="space-y-2 mb-3">
+        ${items.length ? items.map(it => { const st = pantryStatus(it); return `
+          <div class="bg-field-900 border ${st.low ? "border-brass" : "border-field-600"} rounded-xl px-3 py-2" data-pantry="${it.id}">
+            <div class="flex items-center gap-2">
+              <p class="flex-1 min-w-0 text-sm truncate">${escHtml(it.name)} ${st.low ? `<span class="text-[10px] uppercase tracking-wider text-brass">Low</span>` : ""}</p>
+              <p class="font-mono text-sm">${st.onHand} ${escHtml(it.unit)}</p>
+            </div>
+            <p class="text-[11px] text-field-400">${(it.foods||[]).length ? "Uses: " + it.foods.map(m => escHtml(foodName(m.foodId)) + " ×" + m.per).join(", ") : "Not linked to a food"} · low at ${it.low} ${st.daysLeft != null ? "· ~" + st.daysLeft + " days left" : ""}</p>
+            <div class="flex gap-2 mt-2">
+              <button data-pbuy="${it.id}" class="flex-1 bg-brass text-field-950 font-semibold rounded-lg py-1 text-sm">+ Purchase</button>
+              <button data-padj="${it.id}" class="flex-1 bg-field-700 rounded-lg py-1 text-sm">Adjust</button>
+              <button data-plink="${it.id}" class="flex-1 bg-field-700 rounded-lg py-1 text-sm">Link food</button>
+              <button data-pdel="${it.id}" class="px-2 text-field-400 text-sm">✕</button>
+            </div>
+          </div>`; }).join("") : `<p class="text-xs text-field-400">No pantry items yet.</p>`}
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <input id="pName" class="col-span-2 field-input px-3 py-2" placeholder="Item, e.g. Ground beef" />
+        <input id="pQty" type="number" class="field-input px-3 py-2" placeholder="On hand" />
+        <input id="pUnit" class="field-input px-3 py-2" placeholder="Unit (g, eggs, ml)" />
+        <input id="pLow" type="number" class="field-input px-3 py-2" placeholder="Low at" />
+        <select id="pFood" class="field-input px-3 py-2"><option value="">Linked food (optional)</option>${foods.map(f => `<option value="${escHtml(f.id)}">${escHtml(f.name)}</option>`).join("")}</select>
+        <input id="pPer" type="number" step="any" class="col-span-2 field-input px-3 py-2" placeholder="Pantry units used per 1 food unit (default 1)" />
+      </div>
+      <button id="pAdd" class="mt-3 w-full bg-paper-100 text-field-950 font-semibold rounded-xl py-2">Add to pantry</button>
+    </div>`;
+  const find = id => items.find(x => x.id === id);
+  const save = () => { scheduleSave(); renderPantry(box); };
+  box.querySelector("#pAdd").onclick = () => {
+    const name = box.querySelector("#pName").value.trim();
+    if (!name) return alert("Give the item a name.");
+    const today = isoDate(new Date());
+    const foodId = box.querySelector("#pFood").value;
+    if (!Array.isArray(state.data.pantry)) state.data.pantry = [];
+    state.data.pantry.push({ id: uid("pan"), name, unit: box.querySelector("#pUnit").value.trim() || "each",
+      low: Number(box.querySelector("#pLow").value) || 0, since: today,
+      ledger: [{ date: today, qty: Number(box.querySelector("#pQty").value) || 0, kind: "start" }],
+      foods: foodId ? [{ foodId, per: Number(box.querySelector("#pPer").value) || 1 }] : [] });
+    save();
+  };
+  box.querySelectorAll("[data-pbuy]").forEach(b => b.onclick = () => {
+    const it = find(b.dataset.pbuy); const v = Number(prompt(`How much ${it.name} did you buy (${it.unit})?`));
+    if (!v) return; it.ledger.push({ date: isoDate(new Date()), qty: v, kind: "purchase" }); save();
+  });
+  box.querySelectorAll("[data-padj]").forEach(b => b.onclick = () => {
+    const it = find(b.dataset.padj); const cur = pantryStatus(it).onHand;
+    const raw = prompt(`How much ${it.name} is actually on hand (${it.unit})?`, cur);
+    if (raw === null || raw === "" || isNaN(Number(raw))) return;
+    it.ledger.push({ date: isoDate(new Date()), qty: Number(raw) - cur, kind: "adjust" }); save();
+  });
+  box.querySelectorAll("[data-plink]").forEach(b => b.onclick = () => {
+    const it = find(b.dataset.plink);
+    const q = prompt("Which food uses this item? Type part of its name:"); if (!q) return;
+    const f = foods.find(x => x.name.toLowerCase().includes(q.toLowerCase())); if (!f) return alert("No food matches that.");
+    const per = Number(prompt(`${it.unit} of ${it.name} used per 1 ${f.unit === "each" ? "item" : f.unit} of ${f.name}:`, "1")); if (!per) return;
+    it.foods = (it.foods || []).filter(m => m.foodId !== f.id).concat([{ foodId: f.id, per }]); save();
+  });
+  box.querySelectorAll("[data-pdel]").forEach(b => b.onclick = () => {
+    const it = find(b.dataset.pdel); if (!confirm(`Remove ${it.name} from the pantry?`)) return;
+    state.data.pantry = items.filter(x => x.id !== it.id); save();
+  });
 }
 
 function renderSettings() {
@@ -2324,6 +2528,12 @@ function renderSettings() {
       </div>
     </div>
     <div class="rounded-2xl border border-field-600 bg-field-800 p-4 mb-8">
+      <h3 class="font-medium mb-2">Export meal plan</h3>
+      <p class="text-xs text-field-400 mb-2">Typical day, targets, pantry and the last 14 days of foods (name, amount, date). No weights, sleep, workouts or photos.</p>
+      <div class="flex gap-2 mb-4">
+        <button id="mpCopy" class="flex-1 bg-field-700 rounded-xl py-2">Copy</button>
+        <button id="mpDownload" class="flex-1 bg-field-700 rounded-xl py-2">Download</button>
+      </div>
       <h3 class="font-medium mb-2">Backup</h3>
       <div class="flex gap-2">
         <button id="exp" class="flex-1 bg-field-700 rounded-xl py-2">Export JSON</button>
@@ -2339,6 +2549,17 @@ function renderSettings() {
   root.querySelector("#btnOut").onclick = signOut;
   root.querySelector("#btnCreate").onclick = () => signInEmail(true);
   root.querySelector("#btnEmail").onclick = () => signInEmail(false);
+  root.querySelector("#mpCopy").onclick = async () => {
+    const txt = JSON.stringify(mealPlanExport(), null, 2);
+    try { await navigator.clipboard.writeText(txt); alert("Meal plan copied."); }
+    catch { prompt("Copy the meal plan:", txt); }
+  };
+  root.querySelector("#mpDownload").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(mealPlanExport(), null, 2)], { type: "application/json" }));
+    a.download = "the-logbook-mealplan-" + isoDate(new Date()) + ".json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
   root.querySelector("#exp").onclick = () => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(state.data,null,2)],{type:"application/json"}));
@@ -2374,7 +2595,7 @@ document.getElementById("scanSheet").onclick = (e) => { if (e.target.id === "sca
 document.getElementById("scanLookup").onclick = () => lookupBarcode(document.getElementById("scanCode").value);
 document.getElementById("scanCode").onkeydown = e => { if (e.key === "Enter") lookupBarcode(e.target.value); };
 
-if ("serviceWorker" in navigator) {
+if ("serviceWorker" in navigator && !EXPORT_MODE) {
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
 }
 function hideSplash() {
@@ -2397,7 +2618,7 @@ try {
 } catch (e) { console.error(e); }
 setTimeout(hideSplash, 1200);
 // Chart.js no longer blocks first paint; fetch it in the background so the Today donut appears shortly after.
-setTimeout(() => loadChart().then(() => { if (state.tab === "today") render(); }).catch(() => {}), 300);
+if (!EXPORT_MODE) setTimeout(() => loadChart().then(() => { if (state.tab === "today") render(); }).catch(() => {}), 300);
 </script>
 </body>
 </html>
