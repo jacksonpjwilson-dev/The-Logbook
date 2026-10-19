@@ -140,7 +140,7 @@
   <div id="bootSplash" aria-hidden="true">
     <p class="stamp">THE LOGBOOK</p>
     <div class="rule"></div>
-    <p style="font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#6b6154">Field notes</p><p style="font-size:11px;letter-spacing:.2em;color:#8a7e70;margin-top:8px">v34</p>
+    <p style="font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#6b6154">Field notes</p><p style="font-size:11px;letter-spacing:.2em;color:#8a7e70;margin-top:8px">v35</p>
   </div>
   <header class="sticky top-0 z-30 bg-field-800/95 backdrop-blur border-b border-field-600">
     <div class="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
@@ -150,7 +150,7 @@
       <div class="min-w-0 text-center">
         <h1 class="stamp text-2xl leading-none text-paper-100">THE LOGBOOK</h1>
         <p class="text-[9px] tracking-[0.28em] text-brass uppercase mt-0.5">Daily split. Mission focused.</p>
-        <p id="headerSub" class="text-[10px] text-field-400 truncate mt-0.5 font-mono">v34</p>
+        <button type="button" id="headerSub" class="text-[10px] text-field-400 truncate mt-0.5 font-mono" style="display:block;margin-left:auto;margin-right:auto;max-width:100%;cursor:pointer;background:none;border:0;padding:0" aria-label="Sign in and sync">v35</button>
       </div>
       <button id="todayJump" class="shrink-0 text-brass p-1" aria-label="Today">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/><path d="M9 14h2v2H9z"/></svg>
@@ -254,7 +254,7 @@
   </nav>
 
 <script>
-const APP_VERSION = "v34";
+const APP_VERSION = "v35";
 // Read-only meal-plan export: index.html?export=mealplan (or #export). Never writes to localStorage or Firestore.
 // Full read-only export: index.html?export=all (or #export-all). Everything except photos and auth/config.
 const EXPORT_KIND = (() => {
@@ -264,6 +264,10 @@ const EXPORT_KIND = (() => {
   return null;
 })();
 const EXPORT_MODE = !!EXPORT_KIND;
+// ?signin=1 opens Settings > Sign in; &return=mealplan|all goes back to that export once signed in.
+const SIGNIN_PARAM = new URLSearchParams(location.search).get("signin");
+const SIGNIN_RETURN = (r => (r === "mealplan" || r === "all") ? r : null)(new URLSearchParams(location.search).get("return"));
+const APP_URL_LOCAL = location.origin + location.pathname;
 window.addEventListener("hashchange", () => {
   const h = location.hash === "#export-all" ? "all" : location.hash === "#export" ? "mealplan" : null;
   if (!new URLSearchParams(location.search).get("export") && h !== EXPORT_KIND) location.reload();
@@ -827,21 +831,35 @@ function initFirebaseIfConfigured() {
     else state.firebase.app = firebase.app();
     state.firebase.auth = firebase.auth();
     state.firebase.db = firebase.firestore();
-    state.firebase.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
+    // Keep the session across browser restarts (IndexedDB/local). Set before any sign-in call.
+    state.firebase.persistenceSet = state.firebase.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
     state.firebase.ready = true;
     setSyncStatus("Cloud ready · sign in (menu)");
     state.firebase.auth.getRedirectResult().catch(e => {
       if (e && e.code) setSyncStatus(e.code + ": " + e.message);
     });
+    // Wait until Firebase has restored any saved session before treating the user as signed out
+    // (the first onAuthStateChanged / authStateReady). Matters most for the read-only export pages.
+    const restored = (typeof state.firebase.auth.authStateReady === "function")
+      ? state.firebase.auth.authStateReady().catch(()=>{})
+      : new Promise(res => { let done = false, off = null; off = state.firebase.auth.onAuthStateChanged(() => { done = true; res(); if (typeof off === "function") off(); }); if (done && typeof off === "function") off(); });
     state.firebase.auth.onAuthStateChanged(async (user) => {
+      await restored;
+      if (!user && EXPORT_MODE && !state.authResolved) {
+        // Belt and braces: give a slow IndexedDB restore one more moment before showing "Sign in first".
+        await new Promise(r => setTimeout(r, 1500));
+        user = state.firebase.auth.currentUser;
+      }
       state.authResolved = true;
       if (!user) { state.firebase.uid = null; setSyncStatus(); render(); return; }
+      if (state.firebase.uid === user.uid && state.exportReady) return;
       state.firebase.uid = user.uid;
       setSyncStatus("Syncing…");
       try { await pullCloud(); } catch (e) { state.exportError = e.message || String(e); }
       state.exportReady = true;
       state.lastSync = Date.now();
       setSyncStatus();
+      if (!EXPORT_MODE && SIGNIN_RETURN) { location.replace(APP_URL_LOCAL + "?export=" + SIGNIN_RETURN); return; }
       render();
     });
   } catch (e) { setSyncStatus("Firebase error: " + e.message); }
@@ -964,6 +982,7 @@ async function signInEmail(create) {
   const email = (document.getElementById("authEmail")||{}).value?.trim();
   const pass = (document.getElementById("authPass")||{}).value;
   if (!email || !pass) return alert("Enter email and password.");
+  await state.firebase.persistenceSet;
   try {
     if (create) await state.firebase.auth.createUserWithEmailAndPassword(email, pass);
     else await state.firebase.auth.signInWithEmailAndPassword(email, pass);
@@ -971,6 +990,12 @@ async function signInEmail(create) {
     setSyncStatus((e.code || "auth") + ": " + e.message);
     alert((e.code || "Auth error") + "\n\n" + e.message);
   }
+}
+function openSignIn() {
+  if (EXPORT_MODE) return;
+  showTab("settings");
+  const card = document.getElementById("signinCard");
+  if (card) { card.scrollIntoView({ block: "center" }); card.style.outline = "2px solid #b8975a"; setTimeout(() => { card.style.outline = ""; }, 1600); }
 }
 async function signOut() { if (state.firebase.auth) await state.firebase.auth.signOut(); }
 
@@ -1048,7 +1073,24 @@ function renderExport() {
   const sid = EXPORT_KIND === "all" ? "export-status" : "mealplan-status";
   const pid = EXPORT_KIND === "all" ? "export-json" : "mealplan-json";
   if (cfgOk && !state.authResolved) { box.innerHTML = `<p id="${sid}">Loading…</p>`; return; }
-  if (!state.firebase.uid) { box.innerHTML = `<p id="${sid}">Sign in first</p>`; return; }
+  if (!state.firebase.uid) {
+    const back = APP_URL_LOCAL + "?signin=1&return=" + EXPORT_KIND;
+    const btn = "display:block;width:100%;max-width:340px;margin:8px 0;padding:10px 12px;border-radius:12px;border:1px solid #4a4438;background:#2a2722;color:#efe6d6;font:inherit;cursor:pointer;text-align:center;text-decoration:none";
+    const inp = "display:block;width:100%;max-width:340px;margin:6px 0;padding:9px 10px;border-radius:10px;border:1px solid #4a4438;background:#1d1b18;color:#efe6d6;font:inherit;box-sizing:border-box";
+    box.innerHTML = `<p id="${sid}">Sign in first</p>
+      <p style="color:#a99c86;margin:6px 0 10px">Sign in with the same account you use on your phone. This page will then load your ${EXPORT_KIND === "all" ? "data" : "meal plan"} (read-only).</p>
+      <div id="export-signin">
+        <button type="button" id="exportSignInGoogle" style="${btn};background:#efe6d6;color:#141414;font-weight:600">Sign in with Google</button>
+        <input id="authEmail" type="email" autocomplete="username" placeholder="Email" style="${inp}" />
+        <input id="authPass" type="password" autocomplete="current-password" placeholder="Password" style="${inp}" />
+        <button type="button" id="exportSignInEmail" style="${btn}">Sign in with email</button>
+        <a id="exportSignInLink" href="${back}" style="${btn};background:none">Open sign-in in The Logbook</a>
+      </div>`;
+    box.querySelector("#exportSignInGoogle").onclick = signInGoogle;
+    box.querySelector("#exportSignInEmail").onclick = () => signInEmail(false);
+    box.querySelector("#authPass").onkeydown = e => { if (e.key === "Enter") signInEmail(false); };
+    return;
+  }
   if (!state.exportReady) { box.innerHTML = `<p id="${sid}">Loading…</p>`; return; }
   box.innerHTML = `<p id="${sid}">${state.exportError ? "Cloud read failed, showing this device's copy: " + state.exportError : "Ready"}</p><pre id="${pid}" style="white-space:pre-wrap;word-break:break-word"></pre>`;
   box.querySelector("#" + pid).textContent = JSON.stringify(EXPORT_KIND === "all" ? fullExport() : mealPlanExport(), null, 2);
@@ -2511,8 +2553,8 @@ function renderSettings() {
       <label class="text-xs text-field-400">Carbs (g)</label>
       <input id="tC" type="number" value="${t.carbs||0}" class="w-full field-input px-3 py-2" />
     </div>
-    <div class="rounded-2xl border border-field-600 bg-field-800 p-4 mb-4">
-      <h3 class="font-medium mb-1">Sign in</h3>
+    <div id="signinCard" class="rounded-2xl border border-field-600 bg-field-800 p-4 mb-4">
+      <h3 class="font-medium mb-1" id="signinCardTitle">Sign in</h3>
       <p class="text-xs text-field-400 mb-2">${state.firebase.uid ? "Signed in" : "Use the same email on phone and laptop"}</p>
       <p class="text-xs text-field-400 mb-2">Status: <span id="syncDetail">${document.getElementById("headerSub").textContent}</span></p>
       <div class="flex gap-2 mt-3">
@@ -2588,6 +2630,7 @@ document.getElementById("todayJump").onclick = () => {
   showTab("today");
 };
 document.getElementById("openSettings").onclick = () => showTab("settings");
+document.getElementById("headerSub").onclick = openSignIn;
 document.getElementById("sheetClose").onclick = () => document.getElementById("foodSheet").classList.remove("open");
 document.getElementById("foodSheet").onclick = (e) => { if (e.target.id === "foodSheet") e.currentTarget.classList.remove("open"); };
 document.getElementById("scanClose").onclick = closeScanner;
@@ -2617,6 +2660,7 @@ try {
   state.data = state.data || loadLocal();
 } catch (e) { console.error(e); }
 setTimeout(hideSplash, 1200);
+if (!EXPORT_MODE && SIGNIN_PARAM) setTimeout(openSignIn, 0);
 // Chart.js no longer blocks first paint; fetch it in the background so the Today donut appears shortly after.
 if (!EXPORT_MODE) setTimeout(() => loadChart().then(() => { if (state.tab === "today") render(); }).catch(() => {}), 300);
 </script>

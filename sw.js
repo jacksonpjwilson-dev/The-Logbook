@@ -1,5 +1,5 @@
 // The Logbook service worker. Bump CACHE when shipping a new version.
-const CACHE = "logbook-v34-3";
+const CACHE = "logbook-v35-1";
 const SHELL = ["./", "./index.html", "./styles.css", "./manifest.json", "./icon.png", "./icon-192.png", "./icon-512.png"];
 const CDN = [
   "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js",
